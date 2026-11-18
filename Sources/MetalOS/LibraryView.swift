@@ -245,15 +245,13 @@ struct LibraryView: View {
             Spacer(minLength: 16)
             toolbarButton("magnifyingglass", "Search games", slot: 2) { searchOpen = true }
                 .keyboardShortcut("f", modifiers: .command)
-            Button { showControllerStatus = true } label: { ControllerBatteryBadge().frame(width: 33, height: 34) }
-                .buttonStyle(ConsoleButtonStyle()).foregroundStyle(.white.opacity(0.72))
-                .consoleFocus(navigationActive && homeRow == 0 && topIndex == 3, cornerRadius: 8, scale: 1.08).help("Accessories and controller status").accessibilityLabel("Accessories and controller status")
-            toolbarButton("slider.horizontal.3", "Control Center", slot: 4) { controlCenterOpen = true }
-            toolbarButton("gearshape", "Settings", slot: 5) { store.showSettings = true }
-            toolbarButton("plus", "Add game or app", slot: 6) { store.importApp() }
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                Text(context.date, style: .time).font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(.white.opacity(0.65))
-            }.padding(.leading, 5)
+            toolbarButton("gearshape", "Settings", slot: 3) { store.showSettings = true }
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 30, weight: .regular))
+                .foregroundStyle(.white.opacity(0.78))
+                .frame(width: 34, height: 34)
+                .help("User profile · Coming soon")
+                .accessibilityLabel("User profile, coming soon")
         }.frame(height: 38)
             .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.07)).frame(height: 1).offset(y: 17) }
     }
@@ -743,7 +741,7 @@ struct LibraryView: View {
         switch command {
         case "left", "right":
             let delta = command == "left" ? -1 : 1
-            if homeRow == 0 { topIndex = min(max(topIndex + delta, 0), 6) }
+            if homeRow == 0 { topIndex = min(max(topIndex + delta, 0), 3) }
             else if homeRow == 2 && !appsPage { actionIndex = min(max(actionIndex + delta, 0), welcomeSelected ? 0 : 1) }
             else if homeRow == 3 && welcomeSelected { welcomeCardIndex = min(max(welcomeCardIndex + delta, 0), 2) }
             else if !appsPage {
@@ -780,10 +778,8 @@ struct LibraryView: View {
                 case 0: selectPage(apps: false)
                 case 1: selectPage(apps: true)
                 case 2: searchOpen = true
-                case 3: showControllerStatus = true
-                case 4: controlCenterOpen = true
-                case 5: store.showSettings = true
-                default: store.importApp()
+                case 3: store.showSettings = true
+                default: break
                 }
             } else if homeRow == 1 && !appsPage {
                 if addCardSelected { store.importApp() }
