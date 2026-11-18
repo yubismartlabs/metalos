@@ -21,7 +21,7 @@ struct ArtworkCredentials: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case igdbClientID, igdbClientSecret }
 }
-enum ArtworkKind: String, Sendable { case cover, hero, screenshot }
+enum ArtworkKind: String, Sendable { case cover, tile, hero, screenshot }
 struct ArtworkAsset: Sendable {
     var kind: ArtworkKind
     var url: URL

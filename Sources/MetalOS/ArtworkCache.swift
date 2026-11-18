@@ -81,8 +81,18 @@ actor ArtworkCache {
               width > 0, height > 0, width <= 16_384, height <= 16_384, width * height <= 80_000_000 else {
             throw StudioError.message("The artwork download is not a supported image.")
         }
-        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: kind == .cover ? 1000 : 1920]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw StudioError.message("Could not decode artwork image.") }
+        let maxSize = kind == .cover || kind == .tile ? 1000 : 1920
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: maxSize]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw StudioError.message("Could not decode artwork image.") }
+        let image: CGImage
+        if kind == .tile {
+            let side = min(thumbnail.width, thumbnail.height)
+            let crop = CGRect(x: (thumbnail.width - side) / 2, y: (thumbnail.height - side) / 2, width: side, height: side)
+            guard let square = thumbnail.cropping(to: crop) else { throw StudioError.message("Could not make square game artwork.") }
+            image = square
+        } else {
+            image = thumbnail
+        }
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         let staging = target.deletingLastPathComponent().appendingPathComponent("\(UUID().uuidString).jpg")
         defer { try? FileManager.default.removeItem(at: staging) }

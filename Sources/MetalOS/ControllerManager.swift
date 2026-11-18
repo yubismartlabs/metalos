@@ -26,6 +26,9 @@ final class ControllerManager: ObservableObject {
     var action: ((String) -> Void)?
     var homeAction: (() -> Void)?
     var priorityAction: ((String) -> Bool)?
+    var inactiveAppAction: ((String) -> Bool)?
+    /// Lets an active browser consume left-stick motion as a pointer instead of navigation.
+    var leftStickPointerAction: ((Float, Float) -> Bool)?
     var overlayAction: (() -> Void)?
     var canToggleOverlay: (() -> Bool)?
     var overlayRoute: ((String) -> Bool)?
@@ -122,7 +125,8 @@ final class ControllerManager: ObservableObject {
             pad.leftThumbstick.valueChangedHandler = { [weak self] _, x, y in
                 Task { @MainActor in
                     self?.leftThumbstick = (x, y)
-                    self?.direction(x, y)
+                    if self?.leftStickPointerAction?(x, y) == true { self?.cancelDirectionalRepeat() }
+                    else { self?.direction(x, y) }
                 }
             }
             pad.rightThumbstick.valueChangedHandler = { [weak self] _, x, y in
@@ -153,6 +157,7 @@ final class ControllerManager: ObservableObject {
                 Task { @MainActor in
                     self?.buttonStates["home"] = pressed
                     guard pressed else { return }
+                    if !NSApp.isActive, self?.inactiveAppAction?("home") == true { return }
                     if NSApp.isActive, let self {
                         if !self.inputHandlers.isEmpty { self.deliver("home"); return }
                         if let homeAction = self.homeAction { homeAction(); return }
@@ -184,7 +189,11 @@ final class ControllerManager: ObservableObject {
         // Testing captures raw inputs without operating menus or the in-game overlay.
         guard testSessions.isEmpty else { return }
         if overlayRoute?(command) == true { ConsoleFeedback.shared.respond(to: command); return }
-        guard NSApp.isActive, NSApp.modalWindow == nil else { return }
+        if !NSApp.isActive {
+            if inactiveAppAction?(command) == true { ConsoleFeedback.shared.respond(to: command) }
+            return
+        }
+        guard NSApp.modalWindow == nil else { return }
         ConsoleFeedback.shared.respond(to: command)
         // A modal scope owns input until dismissed. Route to it before global
         // shortcuts so the same press cannot affect the library behind a sheet.
@@ -204,6 +213,11 @@ final class ControllerManager: ObservableObject {
                 self.deliver(command)
             }
         }
+    }
+    func cancelDirectionalRepeat() {
+        heldDirection = nil
+        repeatTimer?.invalidate()
+        repeatTimer = nil
     }
 
     // MARK: - Gamepad configuration

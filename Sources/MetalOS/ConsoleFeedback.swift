@@ -91,6 +91,8 @@ struct ConsoleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed && !feedback.motionReduced ? 0.97 : 1)
+            .brightness(configuration.isPressed ? 0.045 : 0)
+            .shadow(color: configuration.isPressed ? studioAccent.opacity(0.18) : .clear, radius: 10, y: 3)
             .animation(feedback.focusAnimation, value: configuration.isPressed)
             .onChange(of: configuration.isPressed) { _, pressed in if pressed { feedback.play(.confirm) } }
     }

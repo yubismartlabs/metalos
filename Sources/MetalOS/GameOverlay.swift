@@ -319,6 +319,7 @@ private final class OverlayPanel: NSPanel {
 
 private struct GameOverlayView: View {
     @ObservedObject var overlay: GameOverlayController
+    @ObservedObject private var appearance = StudioAppearance.shared
     var body: some View {
         VStack(spacing: 14) {
             if overlay.showingConsole {
@@ -341,9 +342,10 @@ private struct GameOverlayView: View {
             }
         }.padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 27))
-            .background(studioBackground.opacity(0.93), in: RoundedRectangle(cornerRadius: 27))
-            .overlay(RoundedRectangle(cornerRadius: 27).stroke(.white.opacity(0.12)))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 27, style: .continuous))
+            .background(studioBackground.opacity(0.86), in: RoundedRectangle(cornerRadius: 27, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 27, style: .continuous).fill(LinearGradient(colors: [studioAccent.opacity(0.10), .white.opacity(0.025), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)))
+            .overlay(RoundedRectangle(cornerRadius: 27, style: .continuous).strokeBorder(LinearGradient(colors: [.white.opacity(0.24), studioAccent.opacity(0.13), .white.opacity(0.055)], startPoint: .topLeading, endPoint: .bottomTrailing)))
             .padding(12)
             .consoleMotion()
             .environment(\.consoleOverlayFocus, true)

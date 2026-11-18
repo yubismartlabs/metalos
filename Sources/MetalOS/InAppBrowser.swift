@@ -4,7 +4,7 @@ import WebKit
 
 @MainActor
 final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
-    let webView = WKWebView()
+    let webView: WKWebView
     @Published var address = "https://www.google.com"
     @Published var pageTitle = "New Tab"
     @Published var isLoading = false
@@ -14,8 +14,14 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published var downloadStatus = ""
     @Published var pageInputText = ""
     @Published var pageInputIsSecure = false
+    @Published var externalAuthenticationMessage = ""
+    var onAuthorizationCodeDetected: ((String) -> Void)?
+    private var lastReportedAuthorizationCode: String?
 
     override init() {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -92,6 +98,39 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let y = direction == "up" ? -420 : 420
         webView.evaluateJavaScript("window.scrollBy({top:\(y),behavior:'smooth'})")
     }
+    func movePagePointer(to point: CGPoint) {
+        let x = Int(point.x.rounded()), y = Int(point.y.rounded())
+        webView.evaluateJavaScript("""
+        (() => {
+          const x=\(x), y=\(y), target=document.elementFromPoint(x,y);
+          window.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:x,clientY:y,view:window}));
+          if (target) target.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:x,clientY:y,view:window}));
+        })()
+        """)
+    }
+    func activatePagePointer(at point: CGPoint, completion: @escaping (Bool) -> Void) {
+        let x = Int(point.x.rounded()), y = Int(point.y.rounded())
+        webView.evaluateJavaScript("""
+        (() => {
+          const hit=document.elementFromPoint(\(x),\(y));
+          if (!hit) return {text:false};
+          const e=hit.closest('a[href],button,input,textarea,select,[role="button"],[contenteditable="true"]')||hit;
+          e.focus?.({preventScroll:true});
+          const tag=e.tagName?.toLowerCase(), type=e.type?.toLowerCase();
+          const text=['input','textarea'].includes(tag)||e.isContentEditable;
+          if (!text) e.click?.();
+          return {text,type:type||'',value:e.isContentEditable?(e.innerText||''):(e.value||'')};
+        })()
+        """) { [weak self] result, _ in
+            let detail = result as? [String: Any] ?? [:]
+            let needsText = detail["text"] as? Bool == true
+            if needsText {
+                self?.pageInputText = detail["value"] as? String ?? ""
+                self?.pageInputIsSecure = (detail["type"] as? String) == "password"
+            }
+            completion(needsText)
+        }
+    }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { sync(webView); isLoading = true }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -99,14 +138,27 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         webView.evaluateJavaScript("""
         (() => { const t=document.body?.innerText||''; const m=t.match(/(?:authorizationCode|\"code\")\\s*:\\s*\"([^\"]+)\"/); return m?.[1]||''; })()
         """) { [weak self] value, _ in
-            if let code = value as? String, !code.isEmpty { self?.authorizationCode = code }
+            if let code = value as? String, !code.isEmpty { self?.reportAuthorizationCode(code) }
         }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { sync(webView); isLoading = false }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { sync(webView); isLoading = false }
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url, Self.isThirdPartyAuthenticationURL(url),
+              navigationAction.targetFrame?.isMainFrame == true else {
+            decisionHandler(.allow)
+            return
+        }
+        openExternalAuthentication(url)
+        decisionHandler(.cancel)
+    }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url { webView.load(URLRequest(url: url)) }
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+            if Self.isThirdPartyAuthenticationURL(url) { openExternalAuthentication(url) }
+            else { webView.load(URLRequest(url: url)) }
+        }
         return nil
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
@@ -114,7 +166,7 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if let url = navigationResponse.response.url,
            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
            let code = components.queryItems?.first(where: { $0.name == "code" || $0.name == "authorizationCode" })?.value,
-           !code.isEmpty { authorizationCode = code }
+           !code.isEmpty { reportAuthorizationCode(code) }
         decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
     }
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
@@ -144,13 +196,47 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         canGoBack = webView.canGoBack
         canGoForward = webView.canGoForward
     }
+    func openExternalAuthentication(_ url: URL) {
+        let host = url.host ?? "the sign-in provider"
+        if NSWorkspace.shared.open(url) {
+            externalAuthenticationMessage = "\(host) sign-in opened in your default browser. Finish the sign-in there."
+        } else {
+            externalAuthenticationMessage = "Could not open \(host) in your default browser."
+        }
+    }
+    private func reportAuthorizationCode(_ code: String) {
+        authorizationCode = code
+        guard !code.isEmpty, lastReportedAuthorizationCode != code else { return }
+        lastReportedAuthorizationCode = code
+        onAuthorizationCodeDetected?(code)
+    }
+    private static func isThirdPartyAuthenticationURL(_ url: URL) -> Bool {
+        let host = (url.host ?? "").lowercased()
+        let path = url.path.lowercased()
+        if host == "accounts.google.com" || host == "oauth2.googleapis.com" { return true }
+        if host == "google.com" || host.hasSuffix(".google.com") {
+            return path.contains("/o/oauth") || path.contains("/signin") || path.contains("/servicelogin")
+        }
+        if host == "steamcommunity.com" || host.hasSuffix(".steamcommunity.com") {
+            return path.contains("openid") || path.contains("login") || path.contains("signin")
+        }
+        if host == "store.steampowered.com" || host == "help.steampowered.com" {
+            return path.contains("login") || path.contains("signin")
+        }
+        return false
+    }
 }
 
 struct InAppBrowserView: View {
     @ObservedObject var session: InAppBrowserSession
+    @ObservedObject private var controller = ControllerManager.shared
     var authorizationCompletion: ((String) -> Void)? = nil
     var close: (() -> Void)? = nil
     var closeTitle = "Games"
+    var storeBrand: String? = nil
+    var storeAccountActionTitle: String? = nil
+    var storeAccountAction: (() -> Void)? = nil
+    var showAddressBar = true
     @State private var addressDraft = ""
     @State private var toolbarFocus = 0
     @State private var keyboardOpen = false
@@ -158,15 +244,20 @@ struct InAppBrowserView: View {
     @State private var keyboardIsSecure = false
     @State private var keyboardTargetIsAddress = false
     @State private var keyboardTargetIsAuthCode = false
-    private var closeOffset: Int { close == nil ? 0 : 1 }
+    @State private var virtualMouseEnabled = false
+    @State private var virtualMousePosition = CGPoint.zero
+    @State private var webContentSize = CGSize.zero
+    @State private var lastPointerUpdate = Date()
+    private var closeOffset: Int { (close == nil ? 0 : 1) + (storeAccountAction == nil ? 0 : 1) }
     private var backIndex: Int { closeOffset }
     private var forwardIndex: Int { closeOffset + 1 }
     private var reloadIndex: Int { closeOffset + 2 }
     private var addressIndex: Int { closeOffset + 3 }
     private var goIndex: Int { closeOffset + 4 }
-    private var pageIndex: Int { closeOffset + 5 }
+    private var pageIndex: Int { closeOffset + (showAddressBar ? 5 : 3) }
     private var authCodeIndex: Int { closeOffset + 6 }
-    private var connectIndex: Int { closeOffset + 7 }
+    private var pasteCodeIndex: Int { closeOffset + 7 }
+    private var connectIndex: Int { closeOffset + 8 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -174,7 +265,11 @@ struct InAppBrowserView: View {
                 HStack(spacing: 12) {
                     Button { close() } label: { Label(closeTitle, systemImage: closeTitle == "Games" ? "gamecontroller.fill" : "xmark") }
                         .buttonStyle(ConsoleButtonStyle()).consoleFocus(toolbarFocus == 0, cornerRadius: 8)
-                    Text("INTERNET BROWSER").font(.system(size: 10, weight: .bold)).tracking(1.7).foregroundStyle(.white.opacity(0.58))
+                    if let storeAccountActionTitle, let storeAccountAction {
+                        Button(storeAccountActionTitle, action: storeAccountAction).buttonStyle(ConsoleButtonStyle())
+                            .consoleFocus(toolbarFocus == 1, cornerRadius: 8)
+                    }
+                    Text(storeBrand ?? "INTERNET BROWSER").font(.system(size: 10, weight: .bold)).tracking(1.7).foregroundStyle(.white.opacity(0.58))
                     Spacer()
                     Text(session.pageTitle).font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.52)).lineLimit(1)
                 }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 3)
@@ -186,23 +281,57 @@ struct InAppBrowserView: View {
                     .disabled(!session.canGoForward).consoleFocus(toolbarFocus == forwardIndex, cornerRadius: 8)
                 Button { toolbarFocus = reloadIndex; session.reload() } label: { Image(systemName: session.isLoading ? "xmark" : "arrow.clockwise") }
                     .consoleFocus(toolbarFocus == reloadIndex, cornerRadius: 8)
-                TextField("Search or enter address", text: $addressDraft)
-                    .textFieldStyle(.roundedBorder).onSubmit { session.loadAddress(addressDraft) }
-                    .onTapGesture { toolbarFocus = addressIndex }
-                    .consoleFocus(toolbarFocus == addressIndex, cornerRadius: 7)
-                Button("Go") { toolbarFocus = goIndex; session.loadAddress(addressDraft) }
-                    .consoleFocus(toolbarFocus == goIndex, cornerRadius: 8)
-            }.buttonStyle(ConsoleButtonStyle()).padding(11)
-            BrowserWebView(session: session).frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .topLeading) {
-                    Text(session.pageTitle).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                        .foregroundStyle(.white.opacity(0.01)).padding(2)
+                if showAddressBar {
+                    TextField("Search or enter address", text: $addressDraft)
+                        .textFieldStyle(.roundedBorder).onSubmit { session.loadAddress(addressDraft) }
+                        .onTapGesture { toolbarFocus = addressIndex }
+                        .consoleFocus(toolbarFocus == addressIndex, cornerRadius: 7)
+                    Button("Go") { toolbarFocus = goIndex; session.loadAddress(addressDraft) }
+                        .consoleFocus(toolbarFocus == goIndex, cornerRadius: 8)
                 }
+            }.buttonStyle(ConsoleButtonStyle()).padding(11)
+            GeometryReader { geometry in
+                ZStack(alignment: .topLeading) {
+                    BrowserWebView(session: session)
+                        .overlay(alignment: .topLeading) {
+                            Text(session.pageTitle).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                                .foregroundStyle(.white.opacity(0.01)).padding(2)
+                        }
+                    if virtualMouseEnabled {
+                        ZStack {
+                            Circle().fill(studioAccent).frame(width: 14, height: 14)
+                            Circle().strokeBorder(.white, lineWidth: 2).frame(width: 24, height: 24)
+                        }
+                        .shadow(color: .black.opacity(0.65), radius: 3, y: 1)
+                        .position(virtualMousePosition)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                    }
+                }
+                .onAppear {
+                    webContentSize = geometry.size
+                    if virtualMousePosition == .zero { virtualMousePosition = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2) }
+                }
+                .onChange(of: geometry.size) { _, size in
+                    webContentSize = size
+                    virtualMousePosition = clampedPointer(virtualMousePosition, size: size)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !session.externalAuthenticationMessage.isEmpty {
+                Text(authorizationCompletion == nil
+                     ? session.externalAuthenticationMessage
+                     : session.externalAuthenticationMessage + " Copy the final code or redirect URL, return here, paste it below, then choose Connect.")
+                    .font(.system(size: 10)).foregroundStyle(.orange.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13).padding(.vertical, 6)
+            }
             if let authorizationCompletion {
                 HStack(spacing: 8) {
                     TextField("Authorization code", text: $session.authorizationCode).textFieldStyle(.roundedBorder)
                         .onTapGesture { toolbarFocus = authCodeIndex }
                         .consoleFocus(toolbarFocus == authCodeIndex, cornerRadius: 7)
+                    Button("Paste") { pasteAuthorizationCode() }
+                        .buttonStyle(ConsoleButtonStyle()).consoleFocus(toolbarFocus == pasteCodeIndex, cornerRadius: 8)
                     Button("Connect") { toolbarFocus = connectIndex; authorizationCompletion(session.authorizationCode) }
                         .buttonStyle(.borderedProminent).tint(studioAccent)
                         .consoleFocus(toolbarFocus == connectIndex, cornerRadius: 8)
@@ -214,8 +343,9 @@ struct InAppBrowserView: View {
             }
             if close != nil {
                 HStack(spacing: 18) {
-                    Text("D-pad  Move focus / scroll")
-                    Text("A  Select")
+                    Text(virtualMouseEnabled ? "Left stick  Move pointer" : "D-pad  Move focus / scroll")
+                    Text(virtualMouseEnabled ? "A  Click" : "A  Select")
+                    if controller.name != nil { Text("X  \(virtualMouseEnabled ? "Hide" : "Virtual mouse")") }
                     Text("B  Back")
                     Text("LB / RB  Page history")
                     Spacer()
@@ -224,10 +354,38 @@ struct InAppBrowserView: View {
                     .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.08)).frame(height: 1) }
             }
         }
-        .onAppear { addressDraft = session.address }
+        .onAppear {
+            addressDraft = session.address
+            let enabled = $virtualMouseEnabled
+            let keyboard = $keyboardOpen
+            let pointer = $virtualMousePosition
+            let size = $webContentSize
+            let lastUpdate = $lastPointerUpdate
+            controller.leftStickPointerAction = { x, y in
+                guard controller.name != nil, enabled.wrappedValue, !keyboard.wrappedValue,
+                      size.wrappedValue.width > 0, size.wrappedValue.height > 0 else { return false }
+                let now = Date()
+                let elapsed = min(max(now.timeIntervalSince(lastUpdate.wrappedValue), 0.008), 0.05)
+                lastUpdate.wrappedValue = now
+                func scaled(_ value: Float) -> Double {
+                    let magnitude = Double(abs(value))
+                    let deadZone = 0.14
+                    return magnitude <= deadZone ? 0 : (magnitude - deadZone) / (1 - deadZone) * (value < 0 ? -1 : 1)
+                }
+                let speed = 680.0 * elapsed
+                let next = CGPoint(x: pointer.wrappedValue.x + CGFloat(scaled(x) * speed),
+                                   y: pointer.wrappedValue.y - CGFloat(scaled(y) * speed))
+                pointer.wrappedValue = clampedPointer(next, size: size.wrappedValue)
+                return true
+            }
+        }
         .onChange(of: session.address) { _, value in addressDraft = value }
-        .onChange(of: session.authorizationCode) { _, code in if !code.isEmpty { authorizationCompletion?(code) } }
+        .onChange(of: controller.name) { _, name in if name == nil { virtualMouseEnabled = false } }
+        .onChange(of: virtualMousePosition) { _, point in
+            if virtualMouseEnabled { session.movePagePointer(to: point) }
+        }
         .consoleInput(onCommand: navigate)
+        .onDisappear { controller.leftStickPointerAction = nil }
         .consoleSheet(isPresented: $keyboardOpen) {
             SearchKeyboardView(query: $keyboardText, title: keyboardTargetIsAddress ? "Enter address" : keyboardTargetIsAuthCode ? "Authorization code" : "Enter text",
                                subtitle: keyboardTargetIsAddress ? "Search the web or enter a website address." : keyboardTargetIsAuthCode ? "Enter the code returned by the store." : "Type into the selected web form field.",
@@ -244,16 +402,61 @@ struct InAppBrowserView: View {
         }
     }
 
+    private func clampedPointer(_ point: CGPoint, size: CGSize) -> CGPoint {
+        CGPoint(x: min(max(point.x, 12), max(size.width - 12, 12)),
+                y: min(max(point.y, 12), max(size.height - 12, 12)))
+    }
+
+    private func toggleVirtualMouse() {
+        virtualMouseEnabled.toggle()
+        controller.cancelDirectionalRepeat()
+        if virtualMouseEnabled {
+            toolbarFocus = pageIndex
+            virtualMousePosition = CGPoint(x: webContentSize.width / 2, y: webContentSize.height / 2)
+            session.movePagePointer(to: virtualMousePosition)
+        }
+    }
+
+    private func activateVirtualMouse() {
+        session.activatePagePointer(at: virtualMousePosition) { needsText in
+            if needsText {
+                keyboardTargetIsAddress = false
+                keyboardTargetIsAuthCode = false
+                keyboardText = session.pageInputText
+                keyboardIsSecure = session.pageInputIsSecure
+                keyboardOpen = true
+            }
+        }
+    }
+
+    private func pasteAuthorizationCode() {
+        guard let value = NSPasteboard.general.string(forType: .string), !value.isEmpty else {
+            session.externalAuthenticationMessage = "The clipboard is empty. Copy the authorization code or redirect URL in your browser first."
+            return
+        }
+        session.authorizationCode = value
+        toolbarFocus = connectIndex
+    }
+
     private func navigate(_ command: String) {
+        if command == "details" {
+            guard controller.name != nil else { return }
+            toggleVirtualMouse()
+            return
+        }
         if toolbarFocus == pageIndex {
             switch command {
             case "up": toolbarFocus = addressIndex
             case "down" where authorizationCompletion != nil: toolbarFocus = authCodeIndex
             case "down": session.movePageFocus(command)
             case "left", "right": session.movePageFocus(command)
-            case "confirm": session.activatePageFocus { needsText in
-                if needsText { keyboardTargetIsAddress = false; keyboardTargetIsAuthCode = false; keyboardText = session.pageInputText; keyboardIsSecure = session.pageInputIsSecure; keyboardOpen = true }
-            }
+            case "confirm":
+                if virtualMouseEnabled { activateVirtualMouse() }
+                else {
+                    session.activatePageFocus { needsText in
+                        if needsText { keyboardTargetIsAddress = false; keyboardTargetIsAuthCode = false; keyboardText = session.pageInputText; keyboardIsSecure = session.pageInputIsSecure; keyboardOpen = true }
+                    }
+                }
             case "back": if session.canGoBack { session.goBack() } else { close?() }
             case "previous": session.movePageFocus("left")
             case "next": session.movePageFocus("right")
@@ -267,15 +470,17 @@ struct InAppBrowserView: View {
         case "left": toolbarFocus = max(first, toolbarFocus - 1)
         case "right": toolbarFocus = min(last, toolbarFocus + 1)
         case "up": toolbarFocus = pageIndex
-        case "down": toolbarFocus = addressIndex
+        case "down": toolbarFocus = showAddressBar ? addressIndex : pageIndex
         case "confirm":
             if toolbarFocus == 0, close != nil { close?() }
+            else if toolbarFocus == 1, let storeAccountAction { storeAccountAction() }
             else if toolbarFocus == backIndex { session.goBack() }
             else if toolbarFocus == forwardIndex { session.goForward() }
             else if toolbarFocus == reloadIndex { session.reload() }
             else if toolbarFocus == addressIndex { keyboardTargetIsAddress = true; keyboardTargetIsAuthCode = false; keyboardText = addressDraft; keyboardIsSecure = false; keyboardOpen = true }
             else if toolbarFocus == goIndex { session.loadAddress(addressDraft); toolbarFocus = pageIndex }
             else if toolbarFocus == authCodeIndex { keyboardTargetIsAddress = false; keyboardTargetIsAuthCode = true; keyboardText = session.authorizationCode; keyboardIsSecure = false; keyboardOpen = true }
+            else if toolbarFocus == pasteCodeIndex { pasteAuthorizationCode() }
             else if toolbarFocus == connectIndex { authorizationCompletion?(session.authorizationCode) }
         case "back":
             if session.canGoBack { session.goBack() } else { close?() }

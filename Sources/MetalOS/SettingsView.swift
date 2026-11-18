@@ -2,11 +2,12 @@ import SwiftUI
 import AppKit
 
 private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
-    case console = "Console", controllers = "Controllers", artwork = "Artwork", engine = "Engine", windowsGaming = "Windows Gaming", storage = "Library Folder"
+    case console = "Console", appearance = "Appearance", controllers = "Controllers", artwork = "Artwork", engine = "Engine", windowsGaming = "Windows Gaming", storage = "Library Folder"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .console: "display"
+        case .appearance: "circle.lefthalf.filled"
         case .controllers: "gamecontroller"
         case .artwork: "photo.on.rectangle.angled"
         case .engine: "cpu"
@@ -17,10 +18,11 @@ private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .console: "Make yourself at home."
+        case .appearance: "Choose a color and shape the atmosphere."
         case .controllers: "Your controller. Your connection."
         case .artwork: "A face for every game."
         case .engine: "Install the MetalOS NXNative fork or choose your own checkout."
-        case .windowsGaming: "Manage Windows games with Highball, Legendary, and gogdl."
+        case .windowsGaming: "Epic and GOG use managed Wine with selectable DirectX renderers."
         case .storage: "Your Switch games and app data, together."
         }
     }
@@ -29,9 +31,11 @@ struct SettingsView: View {
     @EnvironmentObject var store: LibraryStore
     @StateObject private var engineInstaller = NXNativeInstaller()
     @StateObject private var windowsWineInstaller = WindowsWineInstaller()
+    @StateObject private var gamePortingToolkitInstaller = GamePortingToolkitInstaller()
     @StateObject private var windowsClientInstaller = WindowsClientInstaller()
     @StateObject private var storefrontRuntime = WindowsStorefrontRuntime()
     @ObservedObject private var feedback = ConsoleFeedback.shared
+    @ObservedObject private var appearance = StudioAppearance.shared
     @ObservedObject private var controllers = ControllerManager.shared
     @Environment(\.dismiss) var dismiss
     var isPage = false
@@ -44,7 +48,6 @@ struct SettingsView: View {
     @State private var showTester = false
     @State private var showStorefront = false
     @State private var pickerIndex: Int?
-    @State private var pendingHighballBottleName: String?
     @State private var selectInstalledFork = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -65,7 +68,8 @@ struct SettingsView: View {
                                 Spacer(minLength: 0)
                             }.foregroundStyle(category == item ? .white : .white.opacity(0.43))
                                 .padding(.horizontal, 16).frame(height: 58)
-                                .background(category == item ? .white.opacity(paneFocused ? 0.035 : 0.075) : .clear, in: RoundedRectangle(cornerRadius: 11))
+                                .background(.ultraThinMaterial.opacity(category == item ? 0.52 : 0.08), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(category == item ? studioAccent.opacity(0.25) : .white.opacity(0.035), lineWidth: 1))
 
                         }.buttonStyle(ConsoleButtonStyle()).consoleFocus(category == item && !paneFocused, cornerRadius: 11, scale: 1.035).accessibilityAddTraits(category == item ? [.isSelected] : [])
                     }
@@ -98,7 +102,13 @@ struct SettingsView: View {
         }
             .frame(width: isPage ? nil : 920, height: isPage ? nil : 620)
             .frame(maxWidth: isPage ? .infinity : nil, maxHeight: isPage ? .infinity : nil)
-            .background(studioBackground).preferredColorScheme(.dark).tint(studioAccent)
+            .background {
+                ZStack {
+                    studioBackground
+                    RadialGradient(colors: [studioAccent.opacity(0.15), .clear], center: .topLeading, startRadius: 10, endRadius: 680)
+                    Rectangle().fill(.ultraThinMaterial).opacity(0.14)
+                }.ignoresSafeArea()
+            }.preferredColorScheme(.dark).tint(studioAccent)
             .animation(feedback.focusAnimation, value: actionIndex)
             .animation(feedback.pageAnimation, value: category)
             .consoleInput(onCommand: navigate)
@@ -134,24 +144,6 @@ struct SettingsView: View {
                                 await engineInstaller.checkForUpdates(checkoutPath: store.data.settings.forkPath)
                             }
                         }
-                    } else if index == 5 {
-                        ConsoleFilePicker(title: "Choose Windows game installer", mode: .file, startingPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path, allowedExtensions: ["exe"]) { url in
-                            pickerIndex = nil
-                            Task {
-                                if let bottle = await windowsClientInstaller.installStandaloneInstaller(at: url, workspace: store.workspaceURL) {
-                                    pendingHighballBottleName = bottle
-                                    pickerIndex = 7
-                                }
-                            }
-                        }
-                    } else if index == 7, let bottleName = pendingHighballBottleName, let workspace = store.workspaceURL {
-                        let driveC = WindowsRuntimeLayout.highballHome(in: workspace)
-                            .appendingPathComponent("bottles/\(bottleName)/drive_c", isDirectory: true)
-                        ConsoleFilePicker(title: "Choose the installed game executable", mode: .file, startingPath: driveC.path, allowedExtensions: ["exe"]) { url in
-                            pickerIndex = nil
-                            pendingHighballBottleName = nil
-                            _ = store.addHighballWindowsGame(at: url, bottleName: bottleName)
-                        }
                     } else {
                         ConsoleFilePicker(title: "Choose Switch keys", mode: .file, startingPath: pickerStartingPath(index), allowedExtensions: ["keys"]) { url in
                             store.data.settings.keysPath = url.path
@@ -166,6 +158,7 @@ struct SettingsView: View {
                     await engineInstaller.refresh(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath, checkoutPath: store.data.settings.forkPath)
                     await engineInstaller.checkForUpdates(checkoutPath: store.data.settings.forkPath)
                     windowsWineInstaller.refresh(workspace: store.workspaceURL)
+                    gamePortingToolkitInstaller.refresh(workspace: store.workspaceURL)
                 }
             }
             .onDisappear { store.save() }
@@ -200,6 +193,34 @@ struct SettingsView: View {
             actionRow(5, title: "Games start in full screen", subtitle: "Put a launched game into full screen. Requires Accessibility access the first time.", symbol: "arrow.up.left.and.arrow.down.right", value: store.data.settings.startGamesFullScreen != false ? "On" : "Off")
             note("Use the D-pad or left stick to browse, A / Cross to confirm, B / Circle to go back, and the shoulders to switch between Games and Media. Menu / Options and X / Square open game options.")
             note("Hold LB + RB and press Menu to open the in-game Game Bar. Games continue running while it is open.")
+        case .appearance:
+            Text("COLOR THEMES").font(.system(size: 10, weight: .semibold)).tracking(1.4).foregroundStyle(.white.opacity(0.48))
+            ForEach(Array(StudioTheme.allCases.enumerated()), id: \.element.id) { index, theme in
+                Button {
+                    actionIndex = index
+                    paneFocused = true
+                    appearance.theme = theme
+                } label: {
+                    HStack(spacing: 15) {
+                        Circle().fill(theme.accent.gradient).frame(width: 28, height: 28)
+                            .overlay(Circle().strokeBorder(.white.opacity(0.52), lineWidth: 1))
+                            .shadow(color: theme.accent.opacity(0.42), radius: 9)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(theme.title).font(.system(size: 14, weight: .medium))
+                            Text(theme == appearance.theme ? "Selected theme" : "Apply (theme.title.lowercased()) accents and background")
+                                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.43))
+                        }
+                        Spacer()
+                        if appearance.theme == theme { Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.accent) }
+                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                        .liquidGlassSurface(cornerRadius: 14, tint: theme.accent)
+                }.buttonStyle(ConsoleButtonStyle())
+                    .consoleFocus(paneFocused && actionIndex == index, cornerRadius: 14, scale: 1.02)
+                    .accessibilityAddTraits(appearance.theme == theme ? [.isSelected] : [])
+                    .id("settings-action-\(index)")
+            }
+            Text("Emerald is the default. Your choice is saved on this Mac and used across the home screen, menus, focus rings, and system overlays.")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)).lineSpacing(4).padding(.top, 3)
         case .controllers:
             if controllers.devices.isEmpty {
                 note("No controller connected. Connect using Bluetooth or USB to see battery readings and available settings.")
@@ -269,26 +290,29 @@ struct SettingsView: View {
                 Image(systemName: windowsWineInstaller.installedVersion == nil ? "pc" : "checkmark.circle.fill")
                     .font(.system(size: 23)).foregroundStyle(studioAccent)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Legacy Wine Staging runtime").font(.system(size: 14, weight: .medium))
+                    Text("Managed \(windowsWineInstaller.runtimeName) runtime").font(.system(size: 14, weight: .medium))
                     Text(windowsWineInstaller.installedVersion.map { "Version \($0) · Stored in the library folder, outside MetalOS.app." } ?? "Installed separately in the library folder, outside MetalOS.app.")
                         .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46)).lineLimit(2)
                 }
                 Spacer()
             }.padding(15).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-            actionRow(0, title: windowsWineInstaller.isWorking ? "Installing Wine Staging…" : windowsWineInstaller.installedVersion == nil ? "Install legacy Wine runtime" : "Check legacy Wine runtime",
-                      subtitle: windowsWineInstaller.status, symbol: "arrow.down.circle", value: windowsWineInstaller.isWorking ? "Working" : windowsWineInstaller.installedVersion == nil ? "Install" : "Check", enabled: !windowsWineInstaller.isWorking)
+            actionRow(0, title: windowsWineInstaller.isWorking ? "Installing Windows graphics runtime…" : windowsWineInstaller.installedVersion == nil ? "Install Windows graphics runtime" : "Update Windows graphics runtime",
+                      subtitle: windowsWineInstaller.status, symbol: "arrow.down.circle", value: windowsWineInstaller.isWorking ? "Working" : windowsWineInstaller.installedVersion == nil ? "Install" : "Update", enabled: !windowsWineInstaller.isWorking)
             if windowsWineInstaller.isWorking { ProgressView().tint(studioAccent) }
             actionRow(1, title: "Install Windows Steam", subtitle: "Builds Highball CLI and uses its default Wine engine and Steam recipe.", symbol: "gamecontroller", value: "Install", enabled: !windowsClientInstaller.isWorking)
             actionRow(2, title: "Open Windows Steam", subtitle: "Opens Steam from its Highball bottle. Its first client update can take several minutes.", symbol: "play.fill", value: "Open", enabled: !windowsClientInstaller.isWorking)
             actionRow(3, title: windowsClientInstaller.isWorking ? "Preparing Rockstar bottle…" : "Install Rockstar Games Launcher", subtitle: "Builds Highball’s CLI outside MetalOS.app, then uses its CrossOver-derived Wine 11 engine and Rockstar recipe.", symbol: "square.and.arrow.down", value: windowsClientInstaller.isWorking ? "Working" : "Install", enabled: !windowsClientInstaller.isWorking)
             actionRow(4, title: "Open Rockstar Games Launcher", subtitle: "Launches the Rockstar client in Highball’s managed bottle.", symbol: "play.fill", value: "Open", enabled: !windowsClientInstaller.isWorking)
-            actionRow(5, title: "Install standalone Windows game", subtitle: "Creates a Highball bottle, runs the installer, then lets you select the game executable.", symbol: "plus.app", value: "Install .exe", enabled: store.workspaceURL != nil && !windowsClientInstaller.isWorking)
-            actionRow(6, title: "Get Apple Game Porting Toolkit", subtitle: "Opens Apple’s download page. GPTK stays a separate, user-initiated install.", symbol: "apple.logo", value: "Open")
+            actionRow(6, title: gamePortingToolkitInstaller.isWorking ? "Installing Game Porting Toolkit…" : gamePortingToolkitInstaller.installedVersion == nil ? "Install Game Porting Toolkit" : "Update Game Porting Toolkit",
+                      subtitle: gamePortingToolkitInstaller.installedVersion.map { "Version \($0) · \(gamePortingToolkitInstaller.status)" } ?? gamePortingToolkitInstaller.status,
+                      symbol: "apple.logo", value: gamePortingToolkitInstaller.isWorking ? "Working" : gamePortingToolkitInstaller.installedVersion == nil ? "Install" : "Update",
+                      enabled: store.workspaceURL != nil && !gamePortingToolkitInstaller.isWorking)
+            if gamePortingToolkitInstaller.isWorking { ProgressView().tint(studioAccent) }
             if windowsClientInstaller.isWorking { ProgressView().tint(studioAccent) }
             note(windowsClientInstaller.status)
-            actionRow(7, title: "Browse Epic Games", subtitle: "Legendary handles Epic sign-in and installs; Highball provides the Windows bottle.", symbol: "e.square.fill", value: "Open", enabled: store.workspaceURL != nil)
-            actionRow(8, title: "Browse GOG Games", subtitle: "gogdl handles GOG sign-in and downloads; Highball provides the Windows bottle.", symbol: "g.square.fill", value: "Open", enabled: store.workspaceURL != nil)
-            note("New Windows clients and games use Highball’s CLI and managed bottles. Epic uses Legendary; GOG uses Heroic gogdl. Standalone installers use Highball’s default engine; Steam and Rockstar use their tested recipes. The legacy Wine runtime remains for existing bottles. Individual game and anti-cheat compatibility varies.")
+            actionRow(7, title: "Browse Epic Games", subtitle: "Legendary downloads games directly. Launches use a managed DirectX backend and a separate prefix per game.", symbol: "e.square.fill", value: "Open", enabled: store.workspaceURL != nil)
+            actionRow(8, title: "Browse GOG Games", subtitle: "gogdl downloads games directly. Launches use a managed DirectX backend and a separate prefix per game.", symbol: "g.square.fill", value: "Open", enabled: store.workspaceURL != nil)
+            note("Choose Managed MetalSharp Wine or Game Porting Toolkit per Epic/GOG game in Game Details. Gcenx GPTK runs on Apple Silicon with macOS 14+ and includes Apple D3DMetal; review Apple’s D3DMetal license in the release. GPTK uses D3DMetal automatically for Direct3D 11/12. Steam and Rockstar use Highball recipes.")
         case .storage:
             actionRow(0, title: "Game library and app data", subtitle: store.workspacePath, symbol: "externaldrive", value: "Open")
             actionRow(1, title: "Scan Switch games", subtitle: store.isScanning ? "Checking this folder…" : "Find Switch game folders in your selected location.", symbol: "arrow.clockwise", value: store.isScanning ? "Scanning" : "Scan", enabled: !store.isScanning)
@@ -308,14 +332,15 @@ struct SettingsView: View {
                 Text(value).font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(enabled ? 0.65 : 0.25))
                 Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.white.opacity(0.3))
             }.padding(.horizontal, 17).padding(.vertical, 17).frame(maxWidth: .infinity, alignment: .leading)
-                .background(.white.opacity(paneFocused && actionIndex == index ? 0.075 : 0.025), in: RoundedRectangle(cornerRadius: 11))
+                .background(.ultraThinMaterial.opacity(paneFocused && actionIndex == index ? 0.62 : 0.22), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(paneFocused && actionIndex == index ? studioAccent.opacity(0.32) : .white.opacity(0.055), lineWidth: 1))
 
         }.buttonStyle(ConsoleButtonStyle()).consoleFocus(paneFocused && actionIndex == index, cornerRadius: 11, scale: 1.02).disabled(!enabled).id("settings-action-\(index)")
             .accessibilityAddTraits(paneFocused && actionIndex == index ? [.isSelected] : [])
     }
     private func note(_ text: String) -> some View { Text(text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.42)).lineSpacing(5).fixedSize(horizontal: false, vertical: true) }
     private var actionCount: Int {
-        switch category { case .console: 6; case .controllers: 2; case .artwork: 1; case .engine: 5; case .windowsGaming: 9; case .storage: 2 }
+        switch category { case .console: 6; case .appearance: StudioTheme.allCases.count; case .controllers: 2; case .artwork: 1; case .engine: 5; case .windowsGaming: 9; case .storage: 2 }
     }
     private func pickerStartingPath(_ index: Int) -> String? {
         index == 2 && !store.data.settings.keysPath.isEmpty ? store.data.settings.keysPath : nil
@@ -402,6 +427,8 @@ struct SettingsView: View {
                 store.save()
             default: break
             }
+        case .appearance:
+            if StudioTheme.allCases.indices.contains(index) { appearance.theme = StudioTheme.allCases[index] }
         case .controllers:
             if index == 0 { showControllers = true }
             else { showTester = true }
@@ -418,8 +445,9 @@ struct SettingsView: View {
             else if index == 4 { installDefaultFork() }
         case .windowsGaming:
             if index == 0 {
-                if windowsWineInstaller.installedVersion == nil { Task { await windowsWineInstaller.install(workspace: store.workspaceURL) } }
-                else { windowsWineInstaller.refresh(workspace: store.workspaceURL) }
+                Task { await windowsWineInstaller.install(workspace: store.workspaceURL) }
+            } else if index == 6 {
+                Task { await gamePortingToolkitInstaller.install(workspace: store.workspaceURL) }
             } else if index == 1 {
                 Task {
                     await windowsClientInstaller.install(client: "Steam", workspace: store.workspaceURL)
@@ -436,8 +464,6 @@ struct SettingsView: View {
             else if index == 4 {
                 Task { await windowsClientInstaller.launchRockstar(workspace: store.workspaceURL) }
             }
-            else if index == 5 { pickerIndex = 5 }
-            else if index == 6, let url = URL(string: "https://developer.apple.com/games/game-porting-toolkit/") { NSWorkspace.shared.open(url) }
             else if index == 7 { storefrontRuntime.selectedProvider = .epic; showStorefront = true }
             else if index == 8 { storefrontRuntime.selectedProvider = .gog; showStorefront = true }
         case .storage:

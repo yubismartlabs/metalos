@@ -19,6 +19,57 @@ enum GameSource: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 }
+
+enum WindowsGraphicsBackend: String, Codable, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case vkd3d
+    case dxvk
+    case wine
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .automatic: "Automatic · Mullion / DXMT"
+        case .vkd3d: "VKD3D-Proton + DXVK · Vulkan"
+        case .dxvk: "DXVK · D3D8–11"
+        case .wine: "WineD3D · OpenGL fallback"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .automatic: "Uses MetalSharp Wine’s default Direct3D-to-Metal route."
+        case .vkd3d: "Uses VKD3D-Proton for Direct3D 12 and DXVK for older Direct3D versions."
+        case .dxvk: "Uses DXVK through MoltenVK for Direct3D 8–11."
+        case .wine: "Uses Wine’s OpenGL renderer as a compatibility fallback."
+        }
+    }
+    var environmentValue: String? {
+        switch self {
+        case .automatic: nil
+        case .vkd3d: "vkd3d"
+        case .dxvk: "dxvk"
+        case .wine: "wine"
+        }
+    }
+}
+
+enum WindowsCompatibilityRuntime: String, Codable, CaseIterable, Identifiable, Sendable {
+    case managedWine
+    case gamePortingToolkit
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .managedWine: "Managed Wine · MetalSharp"
+        case .gamePortingToolkit: "Game Porting Toolkit · D3DMetal"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .managedWine: "Uses MetalSharp Wine with the selected DirectX renderer."
+        case .gamePortingToolkit: "Uses Gcenx’s Apple Silicon Wine build with Apple D3DMetal for Direct3D 11/12."
+        }
+    }
+}
+
 struct Game: Identifiable, Codable, Hashable, Sendable {
     var id: String
     var title: String
@@ -34,6 +85,7 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var nxSupport: NXSupportStatus? = nil
     var builtNXProfileRevision: String? = nil
     var boxArt: ArtworkRecord? = nil
+    var tileArt: ArtworkRecord? = nil
     var heroArt: ArtworkRecord? = nil
     var artworkMatchedTitle: String? = nil
     var artworkCheckedAt: Date? = nil
@@ -46,6 +98,9 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var highballBottleName: String? = nil
     var windowsStoreProvider: String? = nil
     var windowsStoreGameID: String? = nil
+    var windowsGraphicsBackend: WindowsGraphicsBackend? = nil
+    var windowsGraphicsBackendUserSet: Bool? = nil
+    var windowsCompatibilityRuntime: WindowsCompatibilityRuntime? = nil
     var isGame: Bool { isGameApp ?? (source != .native || id.hasPrefix("app:") || id.hasPrefix("manual:")) }
     var isAvailable: Bool { FileManager.default.fileExists(atPath: installPath) }
 }

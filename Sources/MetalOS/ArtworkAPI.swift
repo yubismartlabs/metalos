@@ -33,6 +33,7 @@ actor ArtworkAPI {
             let source = game.slug.flatMap { URL(string: "https://www.igdb.com/games/\($0)") }
             if let imageID = game.cover?.imageID, let url = imageURL(imageID, size: "t_cover_big_2x") {
                 result.assets.append(ArtworkAsset(kind: .cover, url: url, provider: "IGDB", sourceURL: source, credit: nil))
+                result.assets.append(ArtworkAsset(kind: .tile, url: url, provider: "IGDB", sourceURL: source, credit: nil))
             } else {
                 result.messages.append("No box art is available for the matched title.")
             }

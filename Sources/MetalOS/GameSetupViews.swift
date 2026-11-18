@@ -78,7 +78,7 @@ struct ConsoleActionRow: View {
 }
 struct SwitchImportView: View {
     @EnvironmentObject var store: LibraryStore
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
     private enum PackageKind: Equatable { case base, update, dlc }
     @State private var baseGame: URL?
     @State private var update: URL?
@@ -124,17 +124,18 @@ struct SwitchImportView: View {
                 row(3, "Add to Games", "MetalOS creates the game folder and prepares the selected files", "plus.circle.fill", enabled: canAdd) {
                     requestAdd()
                 }
-                row(4, "Cancel", "Return to your games", "xmark") { dismiss() }
+                row(4, "Cancel", "Return to your games", "xmark") { onClose() }
             }
             Text("↑ ↓  Choose     A / ×  Select     B / ○  Back").font(.system(size: 10)).foregroundStyle(.secondary)
         }.padding(26).frame(width: 780, height: 650).background(studioBackground).preferredColorScheme(.dark)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(ConsoleFeedback.shared.focusAnimation, value: selection)
             .consoleInput { command in
                 switch command {
                 case "up", "left": selection = max(selection - 1, 0)
                 case "down", "right": selection = min(selection + 1, 4)
                 case "confirm": activate()
-                case "back", "menu", "context": dismiss()
+                case "back", "menu", "context": onClose()
                 default: break
                 }
             }
@@ -168,7 +169,7 @@ struct SwitchImportView: View {
         case 2: picker = .dlc
         case 3:
             if canAdd { requestAdd() }
-        default: dismiss()
+        default: onClose()
         }
     }
     private func requestAdd() { guard canAdd else { return }; showAddConfirmation = true }

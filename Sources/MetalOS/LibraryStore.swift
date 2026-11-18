@@ -241,6 +241,10 @@ final class LibraryStore: ObservableObject {
                     if let bottleName = game.highballBottleName { data.games[index].highballBottleName = bottleName }
                     if let provider = game.windowsStoreProvider { data.games[index].windowsStoreProvider = provider }
                     if let storeID = game.windowsStoreGameID { data.games[index].windowsStoreGameID = storeID }
+                    if game.windowsStoreProvider != nil, game.windowsGraphicsBackendUserSet != true {
+                        data.games[index].windowsGraphicsBackend = game.windowsGraphicsBackend ?? .automatic
+                        data.games[index].windowsGraphicsBackendUserSet = false
+                    }
                 }
                 if let path = game.artworkPath { data.games[index].artworkPath = path }
             } else { data.games.append(game) }
@@ -250,6 +254,24 @@ final class LibraryStore: ObservableObject {
         guard let workspaceURL else { return }
         mergeDiscoveredGames(GameDiscovery.windowsClientLaunchers(in: workspaceURL))
         save()
+    }
+    func mergeOwnedStoreGames(_ games: [WindowsStoreGame], provider: WindowsStorefront) {
+        guard !games.isEmpty else { return }
+        let source: GameSource = provider == .epic ? .epic : .gog
+        let providerID = provider == .epic ? "epic" : "gog"
+        let prefix = provider == .epic ? "legendary:" : "gog:"
+        let entries = games.map { item in
+            Game(id: "\(prefix)\(item.id)", title: item.title, source: source,
+                 launchURL: "metalos-store://\(providerID)/\(item.id)",
+                 installPath: item.installedPath ?? "/MetalOS/not-installed/\(item.id)",
+                 artworkPath: item.executableIconPath,
+                 windowsStoreProvider: providerID, windowsStoreGameID: item.id,
+                 windowsGraphicsBackend: .automatic,
+                 windowsGraphicsBackendUserSet: false)
+        }
+        mergeDiscoveredGames(entries)
+        save()
+        fetchArtwork()
     }
     func checkNXSupport() async {
         guard data.games.contains(where: { $0.source == .nxnative }) else { return }
@@ -285,6 +307,17 @@ final class LibraryStore: ObservableObject {
     func favorite(_ game: Game) {
         guard let i = data.games.firstIndex(where: { $0.id == game.id }) else { return }
         data.games[i].favorite.toggle(); save()
+    }
+    func setWindowsGraphicsBackend(_ backend: WindowsGraphicsBackend, for gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].windowsGraphicsBackend = backend
+        data.games[index].windowsGraphicsBackendUserSet = true
+        save()
+    }
+    func setWindowsCompatibilityRuntime(_ runtime: WindowsCompatibilityRuntime, for gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].windowsCompatibilityRuntime = runtime == .managedWine ? nil : runtime
+        save()
     }
     func launch(_ game: Game) {
         guard game.isAvailable else { notice = "This game is unavailable. Connect its drive or check its installation path."; return }
@@ -329,21 +362,32 @@ final class LibraryStore: ObservableObject {
         }
     }
     private func launchWindowsStoreGame(_ game: Game, provider: String, gameID: String) {
-        guard let workspaceURL, let bottleName = game.highballBottleName,
-              let wine = WindowsRuntimeLayout.highballWineExecutable(in: workspaceURL) else {
-            notice = "Install the Highball Windows runtime and store bottle in Settings → Windows Gaming first."
+        guard let workspaceURL else {
+            notice = "Choose a library folder before launching Windows games."
             return
         }
-        let bottle = WindowsRuntimeLayout.highballHome(in: workspaceURL).appendingPathComponent("bottles/\(bottleName)", isDirectory: true)
+        let selectedRuntime = game.windowsCompatibilityRuntime ?? .managedWine
+        let wine = selectedRuntime == .gamePortingToolkit
+            ? WindowsRuntimeLayout.gamePortingToolkitWineExecutable(in: workspaceURL)
+            : WindowsRuntimeLayout.wineExecutable(in: workspaceURL)
+        guard let wine else {
+            notice = selectedRuntime == .gamePortingToolkit
+                ? "Install Game Porting Toolkit in Settings → Windows Gaming, then try again."
+                : "Install the managed Wine runtime in Settings → Windows Gaming before launching this game."
+            return
+        }
+        let prefix = WindowsRuntimeLayout.storePrefix(provider: provider, gameID: gameID, in: workspaceURL)
+        do { try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true) }
+        catch { notice = "Could not create this game's Wine prefix: \(error.localizedDescription)"; return }
         let executable: URL
         var arguments: [String]
         if provider == "epic" {
             executable = WindowsRuntimeLayout.legendaryCLI(in: workspaceURL)
-            arguments = ["launch", gameID, "--wine", wine.path, "--wine-prefix", bottle.path]
+            arguments = ["launch", gameID, "--wine", wine.path, "--wine-prefix", prefix.path]
         } else if provider == "gog" {
             executable = WindowsRuntimeLayout.gogdlCLI(in: workspaceURL)
             arguments = ["--auth-config-path", WindowsRuntimeLayout.gogAuth(in: workspaceURL).path,
-                         "launch", game.installPath, gameID, "--platform", "windows", "--wine", wine.path, "--wine-prefix", bottle.path]
+                         "launch", game.installPath, gameID, "--platform", "windows", "--wine", wine.path, "--wine-prefix", prefix.path]
         } else {
             notice = "This Windows game store is not supported."
             return
@@ -356,6 +400,21 @@ final class LibraryStore: ObservableObject {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: game.installPath, isDirectory: true)
+        var environment = ProcessInfo.processInfo.environment
+        environment["WINEPREFIX"] = prefix.path
+        if selectedRuntime == .gamePortingToolkit {
+            environment.removeValue(forKey: "GRAPHICS_BACKEND")
+        } else if let backend = game.windowsGraphicsBackendUserSet == true
+            ? game.windowsGraphicsBackend
+            : (provider == "epic" ? .automatic : game.windowsGraphicsBackend),
+                  let value = backend.environmentValue {
+            environment["GRAPHICS_BACKEND"] = value
+            if backend == .vkd3d { environment["WINEDEBUG"] = "-all" }
+        } else {
+            environment.removeValue(forKey: "GRAPHICS_BACKEND")
+        }
+        WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
+        process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -383,6 +442,7 @@ final class LibraryStore: ObservableObject {
         process.currentDirectoryURL = repository
         var environment = ProcessInfo.processInfo.environment
         environment["HIGHBALL_HOME"] = WindowsRuntimeLayout.highballHome(in: workspaceURL).path
+        WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -425,6 +485,7 @@ final class LibraryStore: ObservableObject {
         process.currentDirectoryURL = repository
         var environment = ProcessInfo.processInfo.environment
         environment["HIGHBALL_HOME"] = WindowsRuntimeLayout.highballHome(in: workspaceURL).path
+        WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -481,6 +542,7 @@ final class LibraryStore: ObservableObject {
             notice = "Install Windows Steam in Settings → Windows Gaming first."
             return
         }
+        WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -504,6 +566,8 @@ final class LibraryStore: ObservableObject {
         }
         var environment = ProcessInfo.processInfo.environment
         let process = Process()
+        var launchLog: URL?
+        var launchLogHandle: FileHandle?
         let highballBottles = WindowsRuntimeLayout.highballHome(in: workspaceURL).appendingPathComponent("bottles", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
         if bottle.path.hasPrefix(highballBottles.path + "/") {
@@ -523,16 +587,45 @@ final class LibraryStore: ObservableObject {
                 notice = "The Windows game path is outside a supported managed bottle. Re-add it from Settings → Windows Gaming."
                 return
             }
-            environment["WINEPREFIX"] = bottle.path
-            environment["WINEDEBUG"] = "-all"
+            let prefix = WindowsRuntimeLayout.winePrefix(forBottleAt: bottle)
+            environment["WINEPREFIX"] = prefix.path
+            environment["WINEDEBUG"] = "+err"
             process.executableURL = wine
             process.arguments = [executable.path]
             process.currentDirectoryURL = executable.deletingLastPathComponent()
+            do {
+                let logDirectory = prefix.appendingPathComponent("MetalOS Logs", isDirectory: true)
+                try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+                let logURL = logDirectory.appendingPathComponent("game-launch-\(Int(Date().timeIntervalSince1970)).log")
+                guard FileManager.default.createFile(atPath: logURL.path, contents: nil) else {
+                    throw StudioError.message("Could not create the game's launch log.")
+                }
+                launchLog = logURL
+                launchLogHandle = try FileHandle(forWritingTo: logURL)
+            } catch {
+                notice = "Could not prepare a launch log for \(game.title): \(error.localizedDescription)"
+                return
+            }
         }
+        WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let outputHandle = launchLogHandle
+        let logPath = launchLog?.path
+        process.standardOutput = outputHandle ?? FileHandle.nullDevice
+        process.standardError = outputHandle ?? FileHandle.nullDevice
+        let launchStartedAt = Date()
+        let gameTitle = game.title
+        process.terminationHandler = { [weak self] finishedProcess in
+            try? outputHandle?.close()
+            guard let logPath else { return }
+            let elapsed = Date().timeIntervalSince(launchStartedAt)
+            guard finishedProcess.terminationStatus != 0 || elapsed < 5 else { return }
+            let code = finishedProcess.terminationStatus
+            Task { @MainActor [weak self] in
+                self?.notice = "\(gameTitle) exited shortly after launch (code \(code)). See its log: \(logPath)"
+            }
+        }
         do {
             try process.run()
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
@@ -646,7 +739,7 @@ final class LibraryStore: ObservableObject {
         fetchArtwork(gameID: game.id, force: true)
         return true
     }
-    @discardableResult func addWindowsGame(at url: URL) -> Bool {
+    @discardableResult func addWindowsGame(at url: URL, customTitle: String? = nil) -> Bool {
         guard let workspaceURL, url.pathExtension.lowercased() == "exe" else {
             notice = "Choose a Windows .exe game installed inside a managed bottle."
             return false
@@ -667,24 +760,63 @@ final class LibraryStore: ObservableObject {
             notice = "The selected executable is not inside a supported Windows bottle."
             return false
         }
+        let requestedTitle = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = requestedTitle.flatMap { $0.isEmpty ? nil : $0 }
+            ?? WindowsExecutableIcon.suggestedTitle(for: executable)
         if let existing = data.games.first(where: { $0.windowsExecutablePath == executable.path }) {
+            var titleChanged = false
+            if existing.title != title,
+               let index = data.games.firstIndex(where: { $0.id == existing.id }) {
+                data.games[index].title = title
+                data.games[index].artworkCheckedAt = nil
+                titleChanged = true
+                save()
+            }
+            source = .all
+            showingApps = false
+            favoritesOnly = false
+            query = ""
             selectedID = existing.id
+            Task { await enrichWindowsExecutable(gameID: existing.id, executable: executable) }
+            if titleChanged { fetchArtwork(gameID: existing.id, force: true) }
             return true
         }
-        let title = executable.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
         let id = "windows-exe:\(UUID().uuidString)"
         let game = Game(id: id, title: title, source: .windows, launchURL: "metalos-windows://exe/\(id)", installPath: executable.path,
                         windowsExecutablePath: executable.path, windowsBottlePath: bottle.path)
         data.games.append(game)
         source = .all
         showingApps = false
+        favoritesOnly = false
+        query = ""
         selectedID = game.id
         save()
+        Task { await enrichWindowsExecutable(gameID: game.id, executable: executable) }
         fetchArtwork(gameID: game.id, force: true)
         return true
     }
+
+    private func enrichWindowsExecutable(gameID: String, executable: URL) async {
+        guard let workspaceURL else { return }
+        let details = await WindowsExecutableIcon.inspect(executable: executable, gameID: gameID, workspace: workspaceURL)
+        guard let index = data.games.firstIndex(where: { $0.id == gameID && $0.windowsExecutablePath == executable.path }) else { return }
+        var titleChanged = false
+        let fallbackTitle = WindowsExecutableIcon.suggestedTitle(for: executable)
+        let legacyFallbackTitle = executable.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        if let title = details.title, !title.isEmpty,
+           data.games[index].title == fallbackTitle || data.games[index].title == legacyFallbackTitle {
+            data.games[index].title = title
+            titleChanged = true
+        }
+        if let artworkPath = details.artworkPath {
+            data.games[index].artworkPath = artworkPath
+        }
+        save()
+        if titleChanged { fetchArtwork(gameID: gameID, force: true) }
+    }
+
     @discardableResult func addHighballWindowsGame(at url: URL, bottleName: String) -> Bool {
         guard let workspaceURL, url.pathExtension.lowercased() == "exe", !bottleName.isEmpty,
               !bottleName.contains("/"), bottleName != ".", bottleName != ".." else {
@@ -810,7 +942,7 @@ final class LibraryStore: ObservableObject {
     }
     func removeGame(id: String) {
         let legacyPaths = data.games.first(where: { $0.id == id }).map {
-            [$0.boxArt?.path, $0.heroArt?.path].compactMap { $0 }
+            [$0.boxArt?.path, $0.tileArt?.path, $0.heroArt?.path].compactMap { $0 }
         } ?? []
         data.games.removeAll { $0.id == id }
         if selectedID == id { selectedID = nil }
@@ -831,9 +963,11 @@ final class LibraryStore: ObservableObject {
             if let gameID, game.id != gameID { return false }
             if force { return true }
             let coverMissing = game.boxArt.map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
+            let tileMissing = game.tileArt.map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
             let heroMissing = game.heroArt.map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
             let metadataMissing = game.metadata == nil
-            return (coverMissing || heroMissing || metadataMissing) && (game.artworkCheckedAt.map { Date().timeIntervalSince($0) > 86_400 } ?? true)
+            if tileMissing, game.boxArt != nil { return true }
+            return (coverMissing || tileMissing || heroMissing || metadataMissing) && (game.artworkCheckedAt.map { Date().timeIntervalSince($0) > 86_400 } ?? true)
         }
         guard !pending.isEmpty else { artworkStatus = "Game artwork and details are up to date."; return }
         artworkStatus = "Finding artwork and game details…"
@@ -877,16 +1011,20 @@ final class LibraryStore: ObservableObject {
                     continue
                 }
                 guard self.data.games[index].title == snapshot.title else {
-                    let keep = Set([self.data.games[index].boxArt?.path, self.data.games[index].heroArt?.path]
+                    let keep = Set([self.data.games[index].boxArt?.path, self.data.games[index].tileArt?.path, self.data.games[index].heroArt?.path]
                         .compactMap { $0 } + (self.data.games[index].metadata?.screenshots.map(\.path) ?? []))
                     await self.artworkCache.retainArtwork(for: snapshot.id, paths: keep)
                     continue
                 }
                 for (kind, record) in downloaded {
                     if kind == .screenshot { continue }
-                    let previous = kind == .cover ? self.data.games[index].boxArt : self.data.games[index].heroArt
-                    if kind == .cover { self.data.games[index].boxArt = record }
-                    else { self.data.games[index].heroArt = record }
+                    let previous: ArtworkRecord?
+                    switch kind {
+                    case .cover: previous = self.data.games[index].boxArt; self.data.games[index].boxArt = record
+                    case .tile: previous = self.data.games[index].tileArt; self.data.games[index].tileArt = record
+                    case .hero: previous = self.data.games[index].heroArt; self.data.games[index].heroArt = record
+                    case .screenshot: continue
+                    }
                     if let previous, previous.path != record.path { ArtworkCache.removeLegacyCachedFile(atPath: previous.path) }
                 }
                 if var metadata = result.metadata {
@@ -900,7 +1038,7 @@ final class LibraryStore: ObservableObject {
                     metadata.screenshots = expectedScreenshots.isEmpty ? [] : Array((freshScreenshots + retainedScreenshots).prefix(8))
                     self.data.games[index].metadata = metadata
                 }
-                let keep = Set([self.data.games[index].boxArt?.path, self.data.games[index].heroArt?.path]
+                let keep = Set([self.data.games[index].boxArt?.path, self.data.games[index].tileArt?.path, self.data.games[index].heroArt?.path]
                     .compactMap { $0 } + (self.data.games[index].metadata?.screenshots.map(\.path) ?? []))
                 await self.artworkCache.retainArtwork(for: snapshot.id, paths: keep)
                 if !downloaded.isEmpty || result.metadata != nil {

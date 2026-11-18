@@ -87,6 +87,8 @@ actor GameDBAPI {
         let coverURL = game.cover?.url ?? game.gameLocalizations?.first(where: { $0.cover?.url != nil })?.cover?.url
         if let coverURL, let url = imageURL(coverURL, size: "t_cover_big_2x") {
             result.assets.append(ArtworkAsset(kind: .cover, url: url, provider: "GameDB", sourceURL: sourceURL(for: game), credit: nil))
+            // IGDB covers are portrait. Keep the full cover for details and create a square crop for library rails.
+            result.assets.append(ArtworkAsset(kind: .tile, url: url, provider: "GameDB", sourceURL: sourceURL(for: game), credit: nil))
         } else {
             result.messages.append("GameDB has no box art for the matched title.")
         }
