@@ -14,6 +14,7 @@ APP_DIR="$PWD/dist/MetalOS.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/MetalOS" "$APP_DIR/Contents/MacOS/MetalOS.new"
 mv -f "$APP_DIR/Contents/MacOS/MetalOS.new" "$APP_DIR/Contents/MacOS/MetalOS"
+cp "$PWD/Resources/rockstar-games-logo.png" "$APP_DIR/Contents/Resources/rockstar-games-logo.png"
 swift scripts/render-icon.swift "$PWD/dist/MetalOS.iconset" "$APP_DIR/Contents/Resources/MetalOS.icns"
 # Keep the original bundle identifier so macOS preferences and permissions survive the rename.
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'

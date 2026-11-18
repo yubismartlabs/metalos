@@ -1,13 +1,17 @@
 import Foundation
 
 enum GameSource: String, Codable, CaseIterable, Identifiable, Sendable {
-    case all = "All Games", nxnative = "NXNative", steam = "Steam", crossover = "CrossOver", heroic = "Heroic", appStore = "App Store", native = "Native"
+    case all = "All Games", nxnative = "NXNative", steam = "Steam", epic = "Epic", gog = "GOG", battleNet = "Battle.net", windows = "Windows", crossover = "CrossOver", heroic = "Heroic", appStore = "App Store", native = "Native"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .all: "square.grid.2x2.fill"
         case .nxnative: "cpu.fill"
         case .steam: "gearshape.2.fill"
+        case .epic: "e.square.fill"
+        case .gog: "g.square.fill"
+        case .battleNet: "b.square.fill"
+        case .windows: "pc"
         case .crossover: "square.stack.3d.up.fill"
         case .heroic: "shield.lefthalf.filled"
         case .appStore: "apple.logo"
@@ -36,6 +40,10 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var metadata: GameMetadata? = nil
     var isGameApp: Bool? = nil
     var runConfiguration: GameRunConfiguration? = nil
+    var windowsExecutablePath: String? = nil
+    var windowsBottlePath: String? = nil
+    var highballLibraryID: String? = nil
+    var highballBottleName: String? = nil
     var isGame: Bool { isGameApp ?? (source != .native || id.hasPrefix("app:") || id.hasPrefix("manual:")) }
     var isAvailable: Bool { FileManager.default.fileExists(atPath: installPath) }
 }

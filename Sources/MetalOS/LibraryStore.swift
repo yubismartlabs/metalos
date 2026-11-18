@@ -206,7 +206,13 @@ final class LibraryStore: ObservableObject {
         isScanning = true
         let roots = workspacePath.isEmpty ? data.settings.scanRoots : [workspacePath]
         let result = await GameDiscovery().scan(roots: roots)
-        mergeDiscoveredGames(result.games)
+        var discovered = result.games
+        if let workspaceURL {
+            discovered += GameDiscovery.windowsClientLaunchers(in: workspaceURL)
+            discovered += GameDiscovery.windowsSteamGames(in: workspaceURL)
+            discovered += await HighballLibraryDiscovery.scan(workspace: workspaceURL)
+        }
+        mergeDiscoveredGames(discovered)
         scanWarnings = result.warnings
         await checkNXSupport()
         isScanning = false
@@ -230,10 +236,17 @@ final class LibraryStore: ObservableObject {
                 } else {
                     data.games[index].installPath = game.installPath
                     data.games[index].launchURL = game.launchURL
+                    if let libraryID = game.highballLibraryID { data.games[index].highballLibraryID = libraryID }
+                    if let bottleName = game.highballBottleName { data.games[index].highballBottleName = bottleName }
                 }
                 if let path = game.artworkPath { data.games[index].artworkPath = path }
             } else { data.games.append(game) }
         }
+    }
+    func refreshWindowsGameEntries() {
+        guard let workspaceURL else { return }
+        mergeDiscoveredGames(GameDiscovery.windowsClientLaunchers(in: workspaceURL))
+        save()
     }
     func checkNXSupport() async {
         guard data.games.contains(where: { $0.source == .nxnative }) else { return }
@@ -272,6 +285,22 @@ final class LibraryStore: ObservableObject {
     }
     func launch(_ game: Game) {
         guard game.isAvailable else { notice = "This game is unavailable. Connect its drive or check its installation path."; return }
+        if let executable = game.windowsExecutablePath, let bottle = game.windowsBottlePath {
+            launchWindowsExecutable(game, executablePath: executable, bottlePath: bottle)
+            return
+        }
+        if let url = URL(string: game.launchURL), url.scheme == "metalos-highball" {
+            if let id = game.highballLibraryID {
+                launchHighballLibraryGame(game, libraryID: id)
+                return
+            }
+            launchHighballClient(game, client: url.host ?? "")
+            return
+        }
+        if let url = URL(string: game.launchURL), url.scheme == "metalos-windows" {
+            launchWindowsSteamGame(game, appID: url.pathComponents.last ?? "")
+            return
+        }
         if game.source == .nxnative, let configuration = game.runConfiguration {
             launchBuiltGame(game, configuration: configuration)
             return
@@ -291,6 +320,180 @@ final class LibraryStore: ObservableObject {
                 }
             }
         }
+    }
+    private func launchHighballClient(_ game: Game, client: String) {
+        guard let workspaceURL, ["steam", "rockstar"].contains(client) else {
+            notice = "This Highball launcher entry is not valid."
+            return
+        }
+        let cli = WindowsRuntimeLayout.highballCLI(in: workspaceURL)
+        let repository = WindowsRuntimeLayout.highballRepository(in: workspaceURL)
+        guard FileManager.default.isExecutableFile(atPath: cli.path),
+              FileManager.default.fileExists(atPath: repository.appendingPathComponent("Package.swift").path) else {
+            notice = "The Highball CLI is unavailable. Reinstall the launcher from Settings → Windows Gaming."
+            return
+        }
+        let process = Process()
+        process.executableURL = cli
+        process.arguments = ["run", client == "steam" ? "MetalOS-Steam" : "MetalOS-Rockstar",
+                             client == "steam" ? "Steam" : "Rockstar Launcher"]
+        process.currentDirectoryURL = repository
+        var environment = ProcessInfo.processInfo.environment
+        environment["HIGHBALL_HOME"] = WindowsRuntimeLayout.highballHome(in: workspaceURL).path
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
+        } catch { notice = "Could not open \(game.title): \(error.localizedDescription)" }
+    }
+
+    private func launchHighballLibraryGame(_ game: Game, libraryID: String) {
+        guard let workspaceURL, let bottleName = game.highballBottleName else {
+            notice = "This Highball game is missing its bottle information. Scan the library again."
+            return
+        }
+        let cli = WindowsRuntimeLayout.highballCLI(in: workspaceURL)
+        let repository = WindowsRuntimeLayout.highballRepository(in: workspaceURL)
+        guard FileManager.default.isExecutableFile(atPath: cli.path) else {
+            notice = "The Highball CLI is unavailable. Set up a Highball Windows game from Settings → Windows Gaming."
+            return
+        }
+        var arguments: [String]
+        if libraryID.hasPrefix("steam:") {
+            let appID = String(libraryID.dropFirst("steam:".count))
+            arguments = ["run", bottleName, "Steam", "--", "-applaunch", appID]
+        } else if libraryID.hasPrefix("epic:") {
+            arguments = ["epic", "launch", bottleName, String(libraryID.dropFirst("epic:".count))]
+        } else if libraryID.hasPrefix("gog:") {
+            arguments = ["gog", "launch", bottleName, String(libraryID.dropFirst("gog:".count))]
+        } else if libraryID.hasPrefix("pin:") {
+            let pinName = Self.highballPinName(libraryID: libraryID, bottle: bottleName, home: WindowsRuntimeLayout.highballHome(in: workspaceURL)) ?? game.title
+            arguments = ["run", bottleName, pinName]
+        } else {
+            notice = "Highball does not have a launch command for this library entry yet."
+            return
+        }
+        let process = Process()
+        process.executableURL = cli
+        process.arguments = arguments
+        process.currentDirectoryURL = repository
+        var environment = ProcessInfo.processInfo.environment
+        environment["HIGHBALL_HOME"] = WindowsRuntimeLayout.highballHome(in: workspaceURL).path
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
+        } catch { notice = "Could not open \(game.title): \(error.localizedDescription)" }
+    }
+
+    private static func highballPinName(libraryID: String, bottle: String, home: URL) -> String? {
+        guard let uuid = libraryID.split(separator: ":").last.map(String.init) else { return nil }
+        let file = home.appendingPathComponent("bottles/\(bottle)/bottle.json")
+        guard let data = try? Data(contentsOf: file),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pins = object["pins"] as? [[String: Any]],
+              let pin = pins.first(where: { ($0["id"] as? String)?.caseInsensitiveCompare(uuid) == .orderedSame }) else { return nil }
+        return pin["name"] as? String
+    }
+
+    private func launchWindowsSteamGame(_ game: Game, appID: String) {
+        guard UInt64(appID) != nil, let workspaceURL else {
+            notice = "Install Windows Steam in Settings → Windows Gaming first."
+            return
+        }
+        let highballHome = WindowsRuntimeLayout.highballHome(in: workspaceURL)
+        let highballSteam = highballHome.appendingPathComponent("bottles/MetalOS-Steam/drive_c/Program Files (x86)/Steam", isDirectory: true)
+        let highballManifest = highballSteam.appendingPathComponent("steamapps/appmanifest_\(appID).acf")
+        var environment = ProcessInfo.processInfo.environment
+        let process = Process()
+        if FileManager.default.fileExists(atPath: highballManifest.path) {
+            let cli = WindowsRuntimeLayout.highballCLI(in: workspaceURL)
+            guard FileManager.default.isExecutableFile(atPath: cli.path) else {
+                notice = "The Highball CLI is missing. Open Settings → Windows Gaming and set up Windows Steam again."
+                return
+            }
+            process.executableURL = cli
+            process.arguments = ["run", "MetalOS-Steam", "Steam", "--", "-applaunch", appID]
+            process.currentDirectoryURL = WindowsRuntimeLayout.highballRepository(in: workspaceURL)
+            environment["HIGHBALL_HOME"] = highballHome.path
+        } else if let wine = WindowsRuntimeLayout.wineExecutable(in: workspaceURL) {
+            // Keep games installed in an older MetalOS Wine bottle playable until their library is moved.
+            let prefix = WindowsRuntimeLayout.bottle("Steam", in: workspaceURL).appendingPathComponent("prefix", isDirectory: true)
+            let steam = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
+            guard FileManager.default.isReadableFile(atPath: steam.path) else {
+                notice = "Install Windows Steam in Settings → Windows Gaming first."
+                return
+            }
+            process.executableURL = wine
+            process.arguments = [steam.path, "-applaunch", appID]
+            environment["WINEPREFIX"] = prefix.path
+            environment["WINEDEBUG"] = "-all"
+        } else {
+            notice = "Install Windows Steam in Settings → Windows Gaming first."
+            return
+        }
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
+        } catch { notice = "Could not launch \(game.title) through Windows Steam: \(error.localizedDescription)" }
+    }
+    private func launchWindowsExecutable(_ game: Game, executablePath: String, bottlePath: String) {
+        guard let workspaceURL else {
+            notice = "Choose a game library folder first."
+            return
+        }
+        let bottle = URL(fileURLWithPath: bottlePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+        let executable = URL(fileURLWithPath: executablePath).standardizedFileURL.resolvingSymlinksInPath()
+        let insideDriveC = executable.path.hasPrefix(bottle.path + "/drive_c/") || executable.path.hasPrefix(bottle.path + "/prefix/drive_c/")
+        guard insideDriveC, FileManager.default.isReadableFile(atPath: executable.path) else {
+            notice = "The Windows game executable is outside its managed bottle. Re-add it from Settings → Windows Gaming."
+            return
+        }
+        var environment = ProcessInfo.processInfo.environment
+        let process = Process()
+        let highballBottles = WindowsRuntimeLayout.highballHome(in: workspaceURL).appendingPathComponent("bottles", isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        if bottle.path.hasPrefix(highballBottles.path + "/") {
+            let cli = WindowsRuntimeLayout.highballCLI(in: workspaceURL)
+            let repository = WindowsRuntimeLayout.highballRepository(in: workspaceURL)
+            guard FileManager.default.isExecutableFile(atPath: cli.path) else {
+                notice = "The Highball CLI is missing. Set up the Windows runtime from Settings → Windows Gaming."
+                return
+            }
+            process.executableURL = cli
+            process.arguments = ["run", bottle.lastPathComponent, executable.path]
+            process.currentDirectoryURL = repository
+            environment["HIGHBALL_HOME"] = WindowsRuntimeLayout.highballHome(in: workspaceURL).path
+        } else {
+            let expectedRoot = WindowsRuntimeLayout.bottles(in: workspaceURL).standardizedFileURL.resolvingSymlinksInPath()
+            guard bottle.path.hasPrefix(expectedRoot.path + "/"), let wine = WindowsRuntimeLayout.wineExecutable(in: workspaceURL) else {
+                notice = "The Windows game path is outside a supported managed bottle. Re-add it from Settings → Windows Gaming."
+                return
+            }
+            environment["WINEPREFIX"] = bottle.path
+            environment["WINEDEBUG"] = "-all"
+            process.executableURL = wine
+            process.arguments = [executable.path]
+            process.currentDirectoryURL = executable.deletingLastPathComponent()
+        }
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
+        } catch { notice = "Could not launch \(game.title): \(error.localizedDescription)" }
     }
     private func launchBuiltGame(_ game: Game, configuration: GameRunConfiguration) {
         if let gameProcess, gameProcess.isRunning {
@@ -397,6 +600,78 @@ final class LibraryStore: ObservableObject {
         let game = Game(id: "manual:\(url.path)", title: title.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackTitle, source: discovered?.source ?? .native, launchURL: url.absoluteString, installPath: url.path, titleID: discovered?.titleID, isGameApp: discovered?.isGame ?? false)
         data.games.append(game); source = .all; showingApps = !game.isGame; selectedID = game.id; save()
         if game.source == .nxnative { Task { await checkNXSupport() } }
+        fetchArtwork(gameID: game.id, force: true)
+        return true
+    }
+    @discardableResult func addWindowsGame(at url: URL) -> Bool {
+        guard let workspaceURL, url.pathExtension.lowercased() == "exe" else {
+            notice = "Choose a Windows .exe game installed inside a managed bottle."
+            return false
+        }
+        let bottlesRoot = WindowsRuntimeLayout.bottles(in: workspaceURL).standardizedFileURL.resolvingSymlinksInPath()
+        let executable = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard executable.path.hasPrefix(bottlesRoot.path + "/"), FileManager.default.isReadableFile(atPath: executable.path) else {
+            notice = "The game executable must be inside a MetalOS Windows bottle."
+            return false
+        }
+        let components = executable.pathComponents
+        guard let prefixIndex = components.firstIndex(of: "prefix"), prefixIndex > 0 else {
+            notice = "Choose a game executable inside a Windows bottle’s prefix folder."
+            return false
+        }
+        let bottle = URL(fileURLWithPath: NSString.path(withComponents: Array(components[..<prefixIndex])), isDirectory: true)
+        guard bottle.path.hasPrefix(bottlesRoot.path + "/") else {
+            notice = "The selected executable is not inside a supported Windows bottle."
+            return false
+        }
+        if let existing = data.games.first(where: { $0.windowsExecutablePath == executable.path }) {
+            selectedID = existing.id
+            return true
+        }
+        let title = executable.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        let id = "windows-exe:\(UUID().uuidString)"
+        let game = Game(id: id, title: title, source: .windows, launchURL: "metalos-windows://exe/\(id)", installPath: executable.path,
+                        windowsExecutablePath: executable.path, windowsBottlePath: bottle.path)
+        data.games.append(game)
+        source = .all
+        showingApps = false
+        selectedID = game.id
+        save()
+        fetchArtwork(gameID: game.id, force: true)
+        return true
+    }
+    @discardableResult func addHighballWindowsGame(at url: URL, bottleName: String) -> Bool {
+        guard let workspaceURL, url.pathExtension.lowercased() == "exe", !bottleName.isEmpty,
+              !bottleName.contains("/"), bottleName != ".", bottleName != ".." else {
+            notice = "Choose a Windows .exe installed in a Highball bottle."
+            return false
+        }
+        let bottlesRoot = WindowsRuntimeLayout.highballHome(in: workspaceURL).appendingPathComponent("bottles", isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let bottle = bottlesRoot.appendingPathComponent(bottleName, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+        let executable = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard bottle.deletingLastPathComponent().path == bottlesRoot.path,
+              executable.path.hasPrefix(bottle.path + "/drive_c/"),
+              FileManager.default.isReadableFile(atPath: executable.path) else {
+            notice = "Choose the installed game executable inside this Highball bottle’s drive_c folder."
+            return false
+        }
+        if let existing = data.games.first(where: { $0.windowsExecutablePath == executable.path }) {
+            selectedID = existing.id
+            return true
+        }
+        let title = executable.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+        let id = "highball-exe:\(UUID().uuidString)"
+        let game = Game(id: id, title: title, source: .windows, launchURL: "metalos-highball://program", installPath: executable.path,
+                        windowsExecutablePath: executable.path, windowsBottlePath: bottle.path)
+        data.games.append(game)
+        source = .all
+        showingApps = false
+        selectedID = game.id
+        save()
         fetchArtwork(gameID: game.id, force: true)
         return true
     }

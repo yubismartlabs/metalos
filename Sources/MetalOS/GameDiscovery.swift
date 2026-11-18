@@ -42,6 +42,42 @@ struct GameDiscovery: Sendable {
         return Game(id: "steam:\(appID)", title: name, source: .steam, launchURL: "steam://rungameid/\(appID)", installPath: library.appendingPathComponent("steamapps/common").appendingPathComponent(directory).path)
     }
 
+    static func windowsSteamGames(in workspace: URL) -> [Game] {
+        let root = WindowsRuntimeLayout.root(in: workspace)
+        let steamRoots = [
+            root.appendingPathComponent("HighballData/bottles/MetalOS-Steam/drive_c/Program Files (x86)/Steam", isDirectory: true),
+            WindowsRuntimeLayout.bottle("Steam", in: workspace)
+                .appendingPathComponent("prefix/drive_c/Program Files (x86)/Steam", isDirectory: true)
+        ]
+        var seen = Set<String>()
+        return steamRoots.flatMap { steamRoot -> [Game] in
+            let steamApps = steamRoot.appendingPathComponent("steamapps", isDirectory: true)
+            guard let files = try? FileManager.default.contentsOfDirectory(at: steamApps, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+            return files.filter { $0.lastPathComponent.hasPrefix("appmanifest_") && $0.pathExtension == "acf" }
+                .compactMap { url -> Game? in
+                    guard let manifest = try? String(contentsOf: url, encoding: .utf8),
+                          var game = steamGame(manifest: manifest, library: steamRoot), game.isAvailable,
+                          seen.insert(game.id).inserted else { return nil }
+                    game.launchURL = "metalos-windows://steam/\(game.id.dropFirst("steam:".count))"
+                    return game
+                }
+        }
+    }
+
+    static func windowsClientLaunchers(in workspace: URL) -> [Game] {
+        let home = WindowsRuntimeLayout.highballHome(in: workspace)
+        let clients: [(String, String, GameSource, String)] = [
+            ("Steam", "bottles/MetalOS-Steam/drive_c/Program Files (x86)/Steam/steam.exe", .steam, "steam"),
+            ("Rockstar Games Launcher", "bottles/MetalOS-Rockstar/drive_c/Program Files/Rockstar Games/Launcher/Launcher.exe", .windows, "rockstar")
+        ]
+        return clients.compactMap { title, relativePath, source, client in
+            let executable = home.appendingPathComponent(relativePath)
+            guard FileManager.default.isReadableFile(atPath: executable.path) else { return nil }
+            return Game(id: "windows-client:highball:\(client)", title: title, source: source,
+                        launchURL: "metalos-highball://\(client)", installPath: executable.path)
+        }
+    }
+
     private static func pairs(in text: String) -> [(String, String)] {
         guard let regex = try? NSRegularExpression(pattern: #""((?:\\.|[^"\\])*)"\s*"((?:\\.|[^"\\])*)""#) else { return [] }
         let source = text as NSString

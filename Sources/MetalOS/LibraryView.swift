@@ -78,8 +78,8 @@ struct LibraryView: View {
                             gameMetadataPanel.padding(.bottom, 18)
                         } else {
                             welcomeSpotlight(compact: geometry.size.height < 780)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 18)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                                .padding(.bottom, 20)
                             welcomeMetadataPanel.padding(.bottom, 18)
                         }
                     }
@@ -238,6 +238,8 @@ struct LibraryView: View {
 
     private var navigationBar: some View {
         HStack(spacing: 24) {
+            Text("METALOS").font(.system(size: 11, weight: .bold, design: .rounded)).tracking(2.1).foregroundStyle(.white.opacity(0.62))
+                .padding(.trailing, 8)
             pageTab("Games", selected: !appsPage, slot: 0) { selectPage(apps: false) }
             pageTab("Media", selected: appsPage, slot: 1) { selectPage(apps: true) }
             Spacer(minLength: 16)
@@ -250,9 +252,6 @@ struct LibraryView: View {
                 .frame(width: 34, height: 34)
                 .help("User profile · Coming soon")
                 .accessibilityLabel("User profile, coming soon")
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                Text(context.date, style: .time).font(.system(size: 14, weight: .light)).monospacedDigit().foregroundStyle(.white.opacity(0.75))
-            }.padding(.leading, 10)
         }.frame(height: 38)
             .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.07)).frame(height: 1).offset(y: 17) }
     }
@@ -293,7 +292,7 @@ struct LibraryView: View {
             .onChange(of: store.selectedID) { _, id in
                 if let id { withAnimation(.easeInOut(duration: 0.23)) { proxy.scrollTo(id, anchor: .center) } }
             }
-        }.frame(height: 220)
+        }.frame(height: 165)
     }
     private func spotlight(compact: Bool) -> some View {
         Group {
@@ -371,11 +370,15 @@ struct LibraryView: View {
     }
     private func welcomeSpotlight(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 12 : 20) {
-            Text("Welcome")
-                .font(.system(size: compact ? 36 : 44, weight: .light)).tracking(-1.2)
-                .lineLimit(1).frame(maxWidth: 700, alignment: .leading)
-            Text("Your games, apps, and captures in one place.")
-                .font(.system(size: 14, weight: .light)).foregroundStyle(.white.opacity(0.58)).lineLimit(2)
+            HStack(spacing: 9) {
+                Image(systemName: "sparkles")
+                Text("WELCOME TO METALOS").tracking(3)
+            }.font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.65))
+            Text("Your game library\nstarts here.")
+                .font(.system(size: compact ? 43 : 58, weight: .light)).tracking(-1.8)
+                .lineLimit(2).frame(maxWidth: 700, alignment: .leading)
+            Text("Choose the + game card to add a Switch title or a Mac app. MetalOS will keep everything ready to play.")
+                .font(.system(size: 15, weight: .light)).foregroundStyle(.white.opacity(0.55)).lineLimit(2)
             Button { store.showImport = true } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "gamecontroller.fill").font(.system(size: 12))
@@ -398,7 +401,7 @@ struct LibraryView: View {
                 performWelcomeCard(2)
             }
         }
-        .frame(height: 156)
+        .frame(height: 112)
         .onAppear { controller.refreshStatus() }
     }
     private func welcomeDashboardCard(index: Int, eyebrow: String, title: String, detail: String, symbol: String, game: Game?, accent: Color, value: String? = nil, action: @escaping () -> Void) -> some View {
@@ -892,7 +895,7 @@ private struct HomeTile: View {
                 RoundedRectangle(cornerRadius: corner).fill(.white.opacity(selected ? 0.09 : 0.045))
                     .frame(width: size, height: size)
                     .overlay {
-                        GameIcon(game: game, artworkMode: .fill).padding(game.boxArt != nil ? 0 : selected ? 16 : 12)
+                        GameIcon(game: game, artworkMode: .fill).padding(game.boxArt != nil || game.id.hasPrefix("windows-client:highball:") ? 0 : selected ? 16 : 12)
                     }
                     .overlay(alignment: .bottom) {
                         if building {
@@ -922,22 +925,22 @@ private struct WelcomeTile: View {
     let selected: Bool
     let focused: Bool
     let select: () -> Void
-    private var size: CGFloat { selected ? 188 : 92 }
+    private var size: CGFloat { selected ? 132 : 92 }
     var body: some View {
         Button(action: select) {
             VStack(alignment: .leading, spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: selected ? 22 : 14)
-                        .fill(LinearGradient(colors: [Color(red: 0.12, green: 0.14, blue: 0.18), Color(red: 0.055, green: 0.065, blue: 0.085)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    RoundedRectangle(cornerRadius: selected ? 17 : 14)
+                        .fill(LinearGradient(colors: [Color(red: 0.05, green: 0.26, blue: 0.58), Color(red: 0.025, green: 0.08, blue: 0.2)], startPoint: .topLeading, endPoint: .bottomTrailing))
                     Circle().fill(studioAccent.opacity(0.22)).frame(width: size * 0.72, height: size * 0.72).blur(radius: 16)
                     VStack(spacing: 8) {
-                        Image(systemName: "square.grid.2x2.fill").font(.system(size: selected ? 48 : 23, weight: .ultraLight))
-                        if selected { Text("✕   △\n□   ○").font(.system(size: 17, weight: .bold, design: .rounded)).multilineTextAlignment(.center).tracking(3) }
+                        Image(systemName: "sparkles").font(.system(size: selected ? 31 : 23, weight: .ultraLight))
+                        if selected { Text("WELCOME").font(.system(size: 8, weight: .bold)).tracking(2) }
                     }.foregroundStyle(.white.opacity(0.86))
                 }.frame(width: size, height: size)
                     .overlay(RoundedRectangle(cornerRadius: selected ? 17 : 14).strokeBorder(.white.opacity(selected ? 0.18 : 0.09)))
                     .consoleFocus(focused, cornerRadius: selected ? 17 : 14, scale: 1.075)
-                if selected { Text("Welcome").font(.system(size: 16, weight: .light)).foregroundStyle(.white.opacity(0.84)).frame(width: size, alignment: .leading) }
+                if selected { Text("Welcome").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8)).frame(width: size, alignment: .leading) }
             }.padding(.top, selected ? 0 : 8).frame(height: 162, alignment: .top)
         }.buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Welcome to MetalOS").accessibilityAddTraits(selected ? [.isSelected] : [])
     }
@@ -994,7 +997,11 @@ struct GameIcon: View {
     var body: some View {
         GeometryReader { geometry in
             Group {
-                if game.source == .nxnative, let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
+                if game.id == "windows-client:highball:steam" {
+                    HighballClientArtwork(client: .steam)
+                } else if game.id == "windows-client:highball:rockstar" {
+                    HighballClientArtwork(client: .rockstar)
+                } else if game.source == .nxnative, let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: artworkMode)
                 } else if let path = game.boxArt?.path, let image = NSImage(contentsOfFile: path) {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: artworkMode)
@@ -1012,6 +1019,46 @@ struct GameIcon: View {
         }.accessibilityHidden(true)
     }
 }
+private struct HighballClientArtwork: View {
+    enum Client: Equatable { case steam, rockstar }
+    let client: Client
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 15).fill(
+                    LinearGradient(colors: client == .steam
+                                   ? [Color(red: 0.08, green: 0.34, blue: 0.53), Color(red: 0.035, green: 0.10, blue: 0.18)]
+                                   : [Color(red: 0.20, green: 0.20, blue: 0.20), Color(red: 0.035, green: 0.035, blue: 0.04)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+                Circle().fill(.white.opacity(0.055))
+                    .frame(width: proxy.size.width * 0.9)
+                    .offset(x: proxy.size.width * 0.35, y: -proxy.size.height * 0.34)
+                if client == .steam {
+                    VStack(spacing: 9) {
+                        Image(systemName: "gamecontroller.fill")
+                            .font(.system(size: min(proxy.size.width * 0.37, 46), weight: .light))
+                            .foregroundStyle(.white)
+                        Text("STEAM").font(.system(size: 11, weight: .heavy, design: .rounded)).tracking(2.6).foregroundStyle(.white.opacity(0.92))
+                    }
+                } else {
+                    VStack(spacing: 7) {
+                        if let url = Bundle.main.url(forResource: "rockstar-games-logo", withExtension: "png"),
+                           let logo = NSImage(contentsOf: url) {
+                            Image(nsImage: logo).resizable().interpolation(.high).scaledToFit()
+                                .frame(width: proxy.size.width * 0.64, height: proxy.size.width * 0.64)
+                        } else {
+                            Text("R*").font(.system(size: min(proxy.size.width * 0.32, 42), weight: .black, design: .rounded))
+                                .foregroundStyle(.black).frame(width: proxy.size.width * 0.46, height: proxy.size.width * 0.46)
+                                .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        Text("ROCKSTAR GAMES").font(.system(size: 7, weight: .heavy, design: .rounded)).tracking(1.1).foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+            }.frame(width: proxy.size.width, height: proxy.size.height).clipped()
+        }.accessibilityHidden(true)
+    }
+}
 struct GameCard: View {
     let game: Game
     let selected: Bool
@@ -1024,7 +1071,7 @@ struct GameCard: View {
         VStack(alignment: .leading, spacing: 10) {
             RoundedRectangle(cornerRadius: 14).fill(.white.opacity(0.035))
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
-                .overlay { GameIcon(game: game).padding(game.boxArt != nil ? 0 : 24) }
+                .overlay { GameIcon(game: game).padding(game.boxArt != nil || game.id.hasPrefix("windows-client:highball:") ? 0 : 24) }
                 .overlay(alignment: .topTrailing) {
                     VStack(alignment: .trailing, spacing: 6) {
                         if game.favorite { Image(systemName: "heart.fill").font(.system(size: 12)).foregroundStyle(studioAccent).padding(7).background(.black.opacity(0.6), in: Circle()) }

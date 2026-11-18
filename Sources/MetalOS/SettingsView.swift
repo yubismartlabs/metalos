@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
-    case console = "Console", controllers = "Controllers", artwork = "Artwork", engine = "Engine", storage = "Library Folder"
+    case console = "Console", controllers = "Controllers", artwork = "Artwork", engine = "Engine", windowsGaming = "Windows Gaming", storage = "Library Folder"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -10,6 +10,7 @@ private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
         case .controllers: "gamecontroller"
         case .artwork: "photo.on.rectangle.angled"
         case .engine: "cpu"
+        case .windowsGaming: "pc"
         case .storage: "externaldrive"
         }
     }
@@ -19,6 +20,7 @@ private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
         case .controllers: "Your controller. Your connection."
         case .artwork: "A face for every game."
         case .engine: "Install the MetalOS NXNative fork or choose your own checkout."
+        case .windowsGaming: "Manage Steam and Rockstar with Highball’s CLI runtime."
         case .storage: "Your Switch games and app data, together."
         }
     }
@@ -26,6 +28,8 @@ private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject var store: LibraryStore
     @StateObject private var engineInstaller = NXNativeInstaller()
+    @StateObject private var windowsWineInstaller = WindowsWineInstaller()
+    @StateObject private var windowsClientInstaller = WindowsClientInstaller()
     @ObservedObject private var feedback = ConsoleFeedback.shared
     @ObservedObject private var controllers = ControllerManager.shared
     @Environment(\.dismiss) var dismiss
@@ -38,6 +42,7 @@ struct SettingsView: View {
     @State private var showControllers = false
     @State private var showTester = false
     @State private var pickerIndex: Int?
+    @State private var pendingHighballBottleName: String?
     @State private var selectInstalledFork = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -123,6 +128,24 @@ struct SettingsView: View {
                                 await engineInstaller.checkForUpdates(checkoutPath: store.data.settings.forkPath)
                             }
                         }
+                    } else if index == 5 {
+                        ConsoleFilePicker(title: "Choose Windows game installer", mode: .file, startingPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path, allowedExtensions: ["exe"]) { url in
+                            pickerIndex = nil
+                            Task {
+                                if let bottle = await windowsClientInstaller.installStandaloneInstaller(at: url, workspace: store.workspaceURL) {
+                                    pendingHighballBottleName = bottle
+                                    pickerIndex = 7
+                                }
+                            }
+                        }
+                    } else if index == 7, let bottleName = pendingHighballBottleName, let workspace = store.workspaceURL {
+                        let driveC = WindowsRuntimeLayout.highballHome(in: workspace)
+                            .appendingPathComponent("bottles/\(bottleName)/drive_c", isDirectory: true)
+                        ConsoleFilePicker(title: "Choose the installed game executable", mode: .file, startingPath: driveC.path, allowedExtensions: ["exe"]) { url in
+                            pickerIndex = nil
+                            pendingHighballBottleName = nil
+                            _ = store.addHighballWindowsGame(at: url, bottleName: bottleName)
+                        }
                     } else {
                         ConsoleFilePicker(title: "Choose Switch keys", mode: .file, startingPath: pickerStartingPath(index), allowedExtensions: ["keys"]) { url in
                             store.data.settings.keysPath = url.path
@@ -136,6 +159,7 @@ struct SettingsView: View {
                 Task {
                     await engineInstaller.refresh(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath, checkoutPath: store.data.settings.forkPath)
                     await engineInstaller.checkForUpdates(checkoutPath: store.data.settings.forkPath)
+                    windowsWineInstaller.refresh(workspace: store.workspaceURL)
                 }
             }
             .onDisappear { store.save() }
@@ -234,6 +258,29 @@ struct SettingsView: View {
             actionRow(3, title: engineInstaller.updateAvailable ? "Install NXNative update" : "Check for NXNative updates", subtitle: engineInstaller.updateStatus, symbol: "arrow.triangle.2.circlepath", value: engineInstaller.updateAvailable ? "Install" : "Check", enabled: !engineInstaller.isWorking)
             actionRow(4, title: "Install Yubismartlabs NXNative fork", subtitle: "Install MetalOS’s default engine into your library folder and select it for builds.", symbol: "square.and.arrow.down", value: "Install", enabled: !engineInstaller.isWorking)
             Link("MetalOS NXNative fork requirements and setup", destination: URL(string: "https://github.com/yubismartlabs/nxnative#requirements")!).font(.caption)
+        case .windowsGaming:
+            HStack(spacing: 14) {
+                Image(systemName: windowsWineInstaller.installedVersion == nil ? "pc" : "checkmark.circle.fill")
+                    .font(.system(size: 23)).foregroundStyle(studioAccent)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Legacy Wine Staging runtime").font(.system(size: 14, weight: .medium))
+                    Text(windowsWineInstaller.installedVersion.map { "Version \($0) · Stored in the library folder, outside MetalOS.app." } ?? "Installed separately in the library folder, outside MetalOS.app.")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46)).lineLimit(2)
+                }
+                Spacer()
+            }.padding(15).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+            actionRow(0, title: windowsWineInstaller.isWorking ? "Installing Wine Staging…" : windowsWineInstaller.installedVersion == nil ? "Install legacy Wine runtime" : "Check legacy Wine runtime",
+                      subtitle: windowsWineInstaller.status, symbol: "arrow.down.circle", value: windowsWineInstaller.isWorking ? "Working" : windowsWineInstaller.installedVersion == nil ? "Install" : "Check", enabled: !windowsWineInstaller.isWorking)
+            if windowsWineInstaller.isWorking { ProgressView().tint(studioAccent) }
+            actionRow(1, title: "Install Windows Steam", subtitle: "Builds Highball CLI and uses its default Wine engine and Steam recipe.", symbol: "gamecontroller", value: "Install", enabled: !windowsClientInstaller.isWorking)
+            actionRow(2, title: "Open Windows Steam", subtitle: "Opens Steam from its Highball bottle. Its first client update can take several minutes.", symbol: "play.fill", value: "Open", enabled: !windowsClientInstaller.isWorking)
+            actionRow(3, title: windowsClientInstaller.isWorking ? "Preparing Rockstar bottle…" : "Install Rockstar Games Launcher", subtitle: "Builds Highball’s CLI outside MetalOS.app, then uses its CrossOver-derived Wine 11 engine and Rockstar recipe.", symbol: "square.and.arrow.down", value: windowsClientInstaller.isWorking ? "Working" : "Install", enabled: !windowsClientInstaller.isWorking)
+            actionRow(4, title: "Open Rockstar Games Launcher", subtitle: "Launches the Rockstar client in Highball’s managed bottle.", symbol: "play.fill", value: "Open", enabled: !windowsClientInstaller.isWorking)
+            actionRow(5, title: "Install standalone Windows game", subtitle: "Creates a Highball bottle, runs the installer, then lets you select the game executable.", symbol: "plus.app", value: "Install .exe", enabled: store.workspaceURL != nil && !windowsClientInstaller.isWorking)
+            actionRow(6, title: "Get Apple Game Porting Toolkit", subtitle: "Opens Apple’s download page. GPTK stays a separate, user-initiated install.", symbol: "apple.logo", value: "Open")
+            if windowsClientInstaller.isWorking { ProgressView().tint(studioAccent) }
+            note(windowsClientInstaller.status)
+            note("New Windows clients and games use Highball’s CLI and managed bottles. Standalone installers use Highball’s default engine; Steam and Rockstar use their tested recipes. The legacy Wine runtime remains for existing bottles. Individual game and anti-cheat compatibility varies.")
         case .storage:
             actionRow(0, title: "Game library and app data", subtitle: store.workspacePath, symbol: "externaldrive", value: "Open")
             actionRow(1, title: "Scan Switch games", subtitle: store.isScanning ? "Checking this folder…" : "Find Switch game folders in your selected location.", symbol: "arrow.clockwise", value: store.isScanning ? "Scanning" : "Scan", enabled: !store.isScanning)
@@ -260,7 +307,7 @@ struct SettingsView: View {
     }
     private func note(_ text: String) -> some View { Text(text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.42)).lineSpacing(5).fixedSize(horizontal: false, vertical: true) }
     private var actionCount: Int {
-        switch category { case .console: 6; case .controllers: 2; case .artwork: 1; case .engine: 5; case .storage: 2 }
+        switch category { case .console: 6; case .controllers: 2; case .artwork: 1; case .engine: 5; case .windowsGaming: 7; case .storage: 2 }
     }
     private func pickerStartingPath(_ index: Int) -> String? {
         index == 2 && !store.data.settings.keysPath.isEmpty ? store.data.settings.keysPath : nil
@@ -361,6 +408,28 @@ struct SettingsView: View {
                 else { Task { await engineInstaller.checkForUpdates(checkoutPath: store.data.settings.forkPath) } }
             }
             else if index == 4 { installDefaultFork() }
+        case .windowsGaming:
+            if index == 0 {
+                if windowsWineInstaller.installedVersion == nil { Task { await windowsWineInstaller.install(workspace: store.workspaceURL) } }
+                else { windowsWineInstaller.refresh(workspace: store.workspaceURL) }
+            } else if index == 1 {
+                Task {
+                    await windowsClientInstaller.install(client: "Steam", workspace: store.workspaceURL)
+                    store.refreshWindowsGameEntries()
+                }
+            } else if index == 2 {
+                Task { await windowsClientInstaller.launch(client: "Steam", workspace: store.workspaceURL) }
+            } else if index == 3 {
+                Task {
+                    await windowsClientInstaller.installRockstar(workspace: store.workspaceURL)
+                    store.refreshWindowsGameEntries()
+                }
+            }
+            else if index == 4 {
+                Task { await windowsClientInstaller.launchRockstar(workspace: store.workspaceURL) }
+            }
+            else if index == 5 { pickerIndex = 5 }
+            else if index == 6, let url = URL(string: "https://developer.apple.com/games/game-porting-toolkit/") { NSWorkspace.shared.open(url) }
         case .storage:
             if index == 0 {
                 if let workspace = store.workspaceURL { NSWorkspace.shared.open(workspace) }
