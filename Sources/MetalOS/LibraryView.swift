@@ -78,8 +78,8 @@ struct LibraryView: View {
                             gameMetadataPanel.padding(.bottom, 18)
                         } else {
                             welcomeSpotlight(compact: geometry.size.height < 780)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                                .padding(.bottom, 20)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 18)
                             welcomeMetadataPanel.padding(.bottom, 18)
                         }
                     }
@@ -398,7 +398,7 @@ struct LibraryView: View {
                 performWelcomeCard(2)
             }
         }
-        .frame(height: 112)
+        .frame(height: 156)
         .onAppear { controller.refreshStatus() }
     }
     private func welcomeDashboardCard(index: Int, eyebrow: String, title: String, detail: String, symbol: String, game: Game?, accent: Color, value: String? = nil, action: @escaping () -> Void) -> some View {
