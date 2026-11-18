@@ -15,6 +15,8 @@ struct LibraryView: View {
     @StateObject private var storefrontRuntime = WindowsStorefrontRuntime()
     @StateObject private var windowsClientInstaller = WindowsClientInstaller()
     @State private var storefrontGameIndex = 0
+    @State private var storefrontFocusZone = 0
+    @State private var storefrontActionIndex = 0
     @State private var storeSignInURL: URL?
     @State private var signInProvider: WindowsStorefront = .epic
     @State private var searchOpen = false
@@ -535,9 +537,20 @@ struct LibraryView: View {
                         .font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
                 }
                 Spacer()
-                Picker("Store", selection: $storefrontRuntime.selectedProvider) {
-                    ForEach(WindowsStorefront.allCases) { provider in Text(provider.rawValue).tag(provider) }
-                }.pickerStyle(.segmented).frame(width: 220)
+                HStack(spacing: 6) {
+                    ForEach(Array(WindowsStorefront.allCases.enumerated()), id: \.element.id) { index, provider in
+                        Button(provider.rawValue) {
+                            storefrontActionIndex = index
+                            storefrontRuntime.selectedProvider = provider
+                        }
+                        .buttonStyle(ConsoleButtonStyle())
+                        .foregroundStyle(storefrontRuntime.selectedProvider == provider ? .white : .white.opacity(0.58))
+                        .padding(.horizontal, 13).frame(height: 32)
+                        .background(storefrontRuntime.selectedProvider == provider ? studioAccent.opacity(0.7) : .white.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                        .consoleFocus(storefrontFocusZone == 0 && storefrontActionIndex == index, cornerRadius: 7, scale: 1.035)
+                        .accessibilityAddTraits(storefrontRuntime.selectedProvider == provider ? [.isSelected] : [])
+                    }
+                }
             }
             HStack(spacing: 8) {
                 Button(storefrontRuntime.selectedProvider == .epic ? "Install Legendary" : "Install gogdl") {
@@ -546,6 +559,7 @@ struct LibraryView: View {
                         else { await storefrontRuntime.installGogdl(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath) }
                     }
                 }.buttonStyle(ConsoleButtonStyle()).disabled(storefrontRuntime.isWorking || store.workspaceURL == nil)
+                    .consoleFocus(storefrontFocusZone == 1 && storefrontActionIndex == 0, cornerRadius: 8)
                 Button("Sign in") {
                     let provider = storefrontRuntime.selectedProvider
                     if provider == .epic { storeSignInURL = storefrontRuntime.epicLoginURL(workspace: store.workspaceURL) }
@@ -554,47 +568,55 @@ struct LibraryView: View {
                     }
                     signInProvider = provider
                 }.buttonStyle(ConsoleButtonStyle()).disabled(storefrontRuntime.isWorking)
+                    .consoleFocus(storefrontFocusZone == 1 && storefrontActionIndex == 1, cornerRadius: 8)
                 Button("Refresh") {
                     Task {
                         if storefrontRuntime.selectedProvider == .epic { await storefrontRuntime.refreshEpicGames(workspace: store.workspaceURL) }
                         else { await storefrontRuntime.refreshGOGGames(workspace: store.workspaceURL) }
                     }
                 }.buttonStyle(ConsoleButtonStyle()).disabled(storefrontRuntime.isWorking)
+                    .consoleFocus(storefrontFocusZone == 1 && storefrontActionIndex == 2, cornerRadius: 8)
                 Spacer()
                 if storefrontRuntime.isWorking { ProgressView().controlSize(.small).tint(studioAccent) }
                 Text(storefrontRuntime.status).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
             }
-            ScrollView {
-                if games.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Your \(storefrontRuntime.selectedProvider.rawValue) games will appear here")
-                            .font(.system(size: 20, weight: .light))
-                        Text("Install the store tool, sign in, then refresh your library.")
-                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 26)
-                } else {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: columns), spacing: 22) {
-                        ForEach(games.indices, id: \.self) { index in
-                            let item = games[index]
-                            let game = storefrontGame(item, provider: storefrontRuntime.selectedProvider)
-                            VStack(alignment: .leading, spacing: 9) {
-                                GameCard(game: game, selected: storefrontGameIndex == index, focused: navigationActive,
-                                         select: { storefrontGameIndex = index; libraryFocused = true },
-                                         launch: { store.launch(game) })
-                                Button(item.isInstalled ? "Play" : "Install") {
-                                    if item.isInstalled { store.launch(game) }
-                                    else {
-                                        Task {
-                                            await storefrontRuntime.install(item, provider: storefrontRuntime.selectedProvider,
-                                                                             workspace: store.workspaceURL, wineInstaller: windowsClientInstaller)
-                                            await store.scan()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if games.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Your \(storefrontRuntime.selectedProvider.rawValue) games will appear here")
+                                .font(.system(size: 20, weight: .light))
+                            Text("Install the store tool, sign in, then refresh your library.")
+                                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 26)
+                    } else {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: columns), spacing: 22) {
+                            ForEach(games.indices, id: \.self) { index in
+                                let item = games[index]
+                                let game = storefrontGame(item, provider: storefrontRuntime.selectedProvider)
+                                VStack(alignment: .leading, spacing: 9) {
+                                    GameCard(game: game, selected: storefrontGameIndex == index, focused: navigationActive && storefrontFocusZone == 2,
+                                             select: { storefrontGameIndex = index; libraryFocused = true },
+                                             launch: { store.launch(game) })
+                                    Button(item.isInstalled ? "Play" : "Install") {
+                                        if item.isInstalled { store.launch(game) }
+                                        else {
+                                            Task {
+                                                await storefrontRuntime.install(item, provider: storefrontRuntime.selectedProvider,
+                                                                                 workspace: store.workspaceURL, wineInstaller: windowsClientInstaller)
+                                                await store.scan()
+                                            }
                                         }
-                                    }
-                                }.buttonStyle(ConsoleButtonStyle()).frame(maxWidth: .infinity)
-                                    .disabled(storefrontRuntime.isWorking || store.workspaceURL == nil)
+                                    }.buttonStyle(ConsoleButtonStyle()).frame(maxWidth: .infinity)
+                                        .consoleFocus(navigationActive && storefrontFocusZone == 2 && storefrontGameIndex == index, cornerRadius: 8)
+                                        .disabled(storefrontRuntime.isWorking || store.workspaceURL == nil)
+                                }.id(index)
                             }
                         }
                     }
+                }
+                .onChange(of: storefrontGameIndex) { _, index in
+                    withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(index, anchor: .center) }
                 }
             }
             .onChange(of: storefrontRuntime.selectedProvider) { _, provider in
@@ -769,6 +791,8 @@ struct LibraryView: View {
         browserPage = false
         store.showingApps = false
         if let provider { storefrontRuntime.selectedProvider = provider }
+        storefrontFocusZone = 0
+        storefrontActionIndex = WindowsStorefront.allCases.firstIndex(of: storefrontRuntime.selectedProvider) ?? 0
         store.source = .all
         homeRow = 1
         topIndex = 2
@@ -912,7 +936,17 @@ struct LibraryView: View {
         case "left", "right":
             let delta = command == "left" ? -1 : 1
             if homeRow == 0 { topIndex = min(max(topIndex + delta, 0), 4) }
-            else if libraryPage { storefrontGameIndex = min(max(storefrontGameIndex + delta, 0), max(storefrontGames.count - 1, 0)) }
+            else if libraryPage {
+                switch storefrontFocusZone {
+                case 0: storefrontActionIndex = min(max(storefrontActionIndex + delta, 0), WindowsStorefront.allCases.count - 1)
+                case 1: storefrontActionIndex = min(max(storefrontActionIndex + delta, 0), 2)
+                default:
+                    let target = storefrontGameIndex + delta
+                    guard target >= 0, target < storefrontGames.count,
+                          target / columns == storefrontGameIndex / columns else { break }
+                    storefrontGameIndex = target
+                }
+            }
             else if browserPage { }
             else if selectedStoreTile != nil {
                 if delta > 0 { selectedStoreTile = min((selectedStoreTile ?? 0) + 1, 2) }
@@ -941,14 +975,24 @@ struct LibraryView: View {
                 }
             } else { store.moveSelection(delta) }
         case "up":
-            if libraryPage && homeRow != 0 { homeRow = 0; topIndex = 2 }
+            if libraryPage && storefrontFocusZone == 2 && storefrontGameIndex >= columns { storefrontGameIndex -= columns }
+            else if libraryPage && storefrontFocusZone > 0 {
+                storefrontFocusZone -= 1
+                storefrontActionIndex = storefrontFocusZone == 0
+                    ? (WindowsStorefront.allCases.firstIndex(of: storefrontRuntime.selectedProvider) ?? 0)
+                    : 0
+            }
+            else if libraryPage && homeRow != 0 { homeRow = 0; topIndex = 2 }
             else if appsPage && homeRow != 0 {
                 let index = store.visibleGames.firstIndex { $0.id == store.selected?.id } ?? 0
                 if index < columns { homeRow = 0; topIndex = 1 } else { store.moveSelection(-columns) }
             } else { homeRow = max(homeRow - 1, 0) }
         case "down":
             if homeRow == 0 { homeRow = 1 }
-            else if libraryPage { storefrontGameIndex += columns }
+            else if libraryPage {
+                if storefrontFocusZone < 2 { storefrontFocusZone += 1; storefrontActionIndex = 0 }
+                else { storefrontGameIndex = min(storefrontGameIndex + columns, max(storefrontGames.count - 1, 0)) }
+            }
             else if appsPage { store.moveSelection(columns) }
             else { homeRow = min(homeRow + 1, welcomeSelected ? 3 : 2) }
         case "confirm":
@@ -962,8 +1006,28 @@ struct LibraryView: View {
                 default: break
                 }
             } else if libraryPage {
-                let games = storefrontGames
-                if games.indices.contains(storefrontGameIndex) {
+                if storefrontFocusZone == 0 {
+                    if WindowsStorefront.allCases.indices.contains(storefrontActionIndex) {
+                        storefrontRuntime.selectedProvider = WindowsStorefront.allCases[storefrontActionIndex]
+                    }
+                } else if storefrontFocusZone == 1 {
+                    if storefrontActionIndex == 0 {
+                        Task {
+                            if storefrontRuntime.selectedProvider == .epic { await storefrontRuntime.installLegendary(workspace: store.workspaceURL) }
+                            else { await storefrontRuntime.installGogdl(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath) }
+                        }
+                    } else if storefrontActionIndex == 1 {
+                        let provider = storefrontRuntime.selectedProvider
+                        storeSignInURL = provider == .epic ? storefrontRuntime.epicLoginURL(workspace: store.workspaceURL) : storefrontRuntime.gogLoginURL()
+                        signInProvider = provider
+                    } else {
+                        Task {
+                            if storefrontRuntime.selectedProvider == .epic { await storefrontRuntime.refreshEpicGames(workspace: store.workspaceURL) }
+                            else { await storefrontRuntime.refreshGOGGames(workspace: store.workspaceURL) }
+                        }
+                    }
+                } else if storefrontFocusZone == 2, storefrontGames.indices.contains(storefrontGameIndex) {
+                    let games = storefrontGames
                     let item = games[storefrontGameIndex]
                     let game = storefrontGame(item, provider: storefrontRuntime.selectedProvider)
                     if item.isInstalled { store.launch(game) }
