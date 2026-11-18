@@ -109,18 +109,8 @@ private struct ConsoleFocusModifier: ViewModifier {
     }
     func body(content: Content) -> some View {
         content
-            .background {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(isFocused ? studioAccent.opacity(0.12) : .clear)
-                    .allowsHitTesting(false)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(isFocused ? studioAccent.opacity(0.84) : .clear, lineWidth: isFocused ? 1.2 : 0)
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: isFocused ? studioAccent.opacity(0.22) : .clear, radius: isFocused ? 13 : 0)
-            .brightness(isFocused ? 0.02 : 0)
+            .shadow(color: isFocused ? studioAccent.opacity(0.48) : .clear, radius: isFocused ? 18 : 0)
+            .brightness(isFocused ? 0.055 : 0)
             .scaleEffect(isFocused && !feedback.motionReduced ? scale : 1)
             .zIndex(isFocused ? 10 : 0)
             .animation(feedback.focusAnimation, value: isFocused)
@@ -135,7 +125,7 @@ private struct ConsoleMotionModifier: ViewModifier {
     }
 }
 extension View {
-    func consoleFocus(_ selected: Bool, cornerRadius: CGFloat = 12, scale: CGFloat = 1.035) -> some View {
+    func consoleFocus(_ selected: Bool, cornerRadius: CGFloat = 12, scale: CGFloat = 1.045) -> some View {
         modifier(ConsoleFocusModifier(selected: selected, cornerRadius: cornerRadius, scale: scale))
     }
     func consoleMotion() -> some View { modifier(ConsoleMotionModifier()) }

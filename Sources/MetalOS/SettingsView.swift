@@ -168,7 +168,7 @@ struct SettingsView: View {
             }
             actionRow(4, title: "Reduce motion", subtitle: "Disable decorative motion. Your macOS Reduce Motion setting is also respected.", symbol: "figure.stand", value: feedback.reduceMotion ? "On" : "Off")
             actionRow(5, title: "Games start in full screen", subtitle: "Put a launched game into full screen. Requires Accessibility access the first time.", symbol: "arrow.up.left.and.arrow.down.right", value: store.data.settings.startGamesFullScreen != false ? "On" : "Off")
-            note("Use the D-pad or left stick to browse, A / Cross to confirm, B / Circle to go back, and the shoulders to switch between Games and Apps. Menu / Options and X / Square open game options.")
+            note("Use the D-pad or left stick to browse, A / Cross to confirm, B / Circle to go back, and the shoulders to switch between Games and Media. Menu / Options and X / Square open game options.")
             note("Hold LB + RB and press Menu to open the in-game Game Bar. Games continue running while it is open.")
         case .controllers:
             if controllers.devices.isEmpty {

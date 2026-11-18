@@ -241,7 +241,7 @@ struct LibraryView: View {
             Text("METALOS").font(.system(size: 11, weight: .bold, design: .rounded)).tracking(2.1).foregroundStyle(.white.opacity(0.62))
                 .padding(.trailing, 8)
             pageTab("Games", selected: !appsPage, slot: 0) { selectPage(apps: false) }
-            pageTab("Apps", selected: appsPage, slot: 1) { selectPage(apps: true) }
+            pageTab("Media", selected: appsPage, slot: 1) { selectPage(apps: true) }
             Spacer(minLength: 16)
             toolbarButton("magnifyingglass", "Search games", slot: 2) { searchOpen = true }
                 .keyboardShortcut("f", modifiers: .command)
@@ -455,7 +455,7 @@ struct LibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 HStack {
-                    Text("Apps").font(.system(size: 32, weight: .light))
+                    Text("Media").font(.system(size: 32, weight: .light))
                     Text("\(store.visibleGames.count)").font(.system(size: 13)).foregroundStyle(studioAccent)
                     Spacer()
                 }
@@ -481,7 +481,7 @@ struct LibraryView: View {
     private var emptyLibrary: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("A place for every game.").font(.system(size: 46, weight: .light)).tracking(-1.5)
-            Text(store.showingApps ? "Add an app with the + button to see it here." : store.data.games.contains(where: \.isGame) ? "No games match your search." : "Add a game app or prepare a Switch title from its folder.")
+            Text(store.showingApps ? "Your apps and captured game media will appear here." : store.data.games.contains(where: \.isGame) ? "No games match your search." : "Add a game app or prepare a Switch title from its folder.")
                 .font(.system(size: 15, weight: .light)).foregroundStyle(.secondary)
             HStack(spacing: 14) {
                 if store.showingApps {
@@ -495,7 +495,7 @@ struct LibraryView: View {
     }
     private var footer: some View {
         HStack(spacing: 24) {
-            hint("A", appsPage ? "Open app" : "Play game"); hint("X", "Options"); hint("☰", "Options"); hint("PS / P", "Control Center"); hint("LB / RB", "Games / Apps"); hint("LB + RB + ☰", "Game Bar")
+            hint("A", appsPage ? "Open app" : "Play game"); hint("X", "Options"); hint("☰", "Options"); hint("PS / P", "Control Center"); hint("LB / RB", "Games / Media"); hint("LB + RB + ☰", "Game Bar")
             Spacer()
             if store.isScanning { ProgressView().controlSize(.mini); Text("Discovering games") }
             else if store.builder.isBuilding { Button("Build in progress") { store.showBuild = true }.buttonStyle(ConsoleButtonStyle()) }
@@ -636,7 +636,7 @@ struct LibraryView: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 11) {
                                     controlCard(0, "Resume", store.selected?.launchURL.isEmpty == false ? "Return to your game" : "Open selected game", "play.fill")
-                                    controlCard(1, "Apps", "Open your apps", "square.grid.2x2")
+                                    controlCard(1, "Media", "Open your media library", "play.rectangle")
                                     controlCard(2, "Game Bar", "Capture and session tools", "slider.horizontal.3")
                                     controlCard(3, store.selected?.source == .nxnative ? "Build Studio" : "Games", store.builder.isBuilding ? "Build in progress" : "Return to games", store.selected?.source == .nxnative ? "hammer.fill" : "gamecontroller.fill")
                                     controlCard(4, "Accessories", "Controller status and setup", "gamecontroller")
@@ -1062,7 +1062,7 @@ private struct HelpView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Your controller. Your console.").font(.title.bold())
-            Text("D-pad / left stick     Browse Games and Apps\nA     Play or open app\nB     Back\nY     Favorite\nPS / P     Control Center\nLB / RB     Switch between Games and Apps\nMenu / Options     Game options\nX     Game options\nLB + RB + Menu     In-game Game Bar")
+            Text("D-pad / left stick     Browse Games and Media\nA     Play or open app\nB     Back\nY     Favorite\nPS / P     Control Center\nLB / RB     Switch between Games and Media\nMenu / Options     Game options\nX     Game options\nLB + RB + Menu     In-game Game Bar")
                 .lineSpacing(9)
             Text("The overlay offers quick access to your game and library. Games continue running while it is open.").foregroundStyle(.secondary)
             Button("Back to games") { dismiss() }.keyboardShortcut(.cancelAction)
