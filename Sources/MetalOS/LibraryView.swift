@@ -9,6 +9,14 @@ struct LibraryView: View {
     @ObservedObject private var feedback = ConsoleFeedback.shared
     @ObservedObject private var controller = ControllerManager.shared
     @State private var appsPage = false
+    @State private var libraryPage = false
+    @State private var browserPage = false
+    @StateObject private var browserSession = InAppBrowserSession()
+    @StateObject private var storefrontRuntime = WindowsStorefrontRuntime()
+    @StateObject private var windowsClientInstaller = WindowsClientInstaller()
+    @State private var storefrontGameIndex = 0
+    @State private var storeSignInURL: URL?
+    @State private var signInProvider: WindowsStorefront = .epic
     @State private var searchOpen = false
     @State private var pendingSwitchImport = false
     @State private var showControllerStatus = false
@@ -25,6 +33,7 @@ struct LibraryView: View {
     @State private var welcomeCardIndex = 0
     @State private var welcomeSelected = true
     @State private var addCardSelected = false
+    @State private var selectedStoreTile: Int?
     @State private var profileToastAction = 0
     @State private var dismissedProfileToastKey: String?
     @FocusState private var libraryFocused: Bool
@@ -33,6 +42,9 @@ struct LibraryView: View {
         controller.activeInputScopeID == nil && contextGameID == nil && browseInstallation == nil && !help && !controlCenterOpen && !store.showSettings && !store.showGameImport && !store.showImport && !store.showBuild && !searchOpen && !showControllerStatus && !settingsShowTester && store.notice == nil
     }
     private var welcomeGames: [Game] { store.data.games.filter(\.isGame) }
+    private var storefrontGames: [WindowsStoreGame] {
+        storefrontRuntime.selectedProvider == .epic ? storefrontRuntime.epicGames : storefrontRuntime.gogGames
+    }
     private var recentWelcomeGame: Game? {
         welcomeGames.filter { $0.lastPlayed != nil }.max { ($0.lastPlayed ?? .distantPast) < ($1.lastPlayed ?? .distantPast) }
     }
@@ -67,7 +79,12 @@ struct LibraryView: View {
                 HomeBackdrop(game: welcomeSelected ? nil : store.selected)
                 VStack(alignment: .leading, spacing: 0) {
                     navigationBar
-                    if appsPage {
+                    if browserPage {
+                        InAppBrowserView(session: browserSession, close: { selectPage(apps: false) })
+                            .padding(.top, 12).padding(.bottom, 8)
+                    } else if libraryPage {
+                        storefrontLibraryView.padding(.top, 18)
+                    } else if appsPage {
                         appsView.padding(.top, 18)
                     } else {
                         gameRail.padding(.top, 26)
@@ -83,7 +100,7 @@ struct LibraryView: View {
                             welcomeMetadataPanel.padding(.bottom, 18)
                         }
                     }
-                    footer
+                    if !browserPage { footer }
                 }.padding(.horizontal, store.console ? 66 : 52).padding(.top, 38)
             }
             }
@@ -152,18 +169,28 @@ struct LibraryView: View {
         .animation(feedback.pageAnimation, value: store.showSettings)
         .animation(feedback.pageAnimation, value: store.showBuild)
         .animation(feedback.pageAnimation, value: appsPage)
+        .animation(feedback.pageAnimation, value: libraryPage)
         .onChange(of: store.visibleGames.count) { _, count in
-            if !appsPage { welcomeSelected = count == 0; addCardSelected = false }
+            if !appsPage && !libraryPage { welcomeSelected = count == 0; addCardSelected = false }
         }
         .onChange(of: store.showingApps) { _, value in
-            appsPage = value
-            topIndex = value ? 1 : 0
+            if value {
+                appsPage = true
+                libraryPage = false
+                browserPage = false
+                topIndex = 1
+            } else if appsPage {
+                appsPage = false
+                libraryPage = false
+                browserPage = false
+                topIndex = 0
+            }
         }
         .consoleModalBackdrop(contextGameID != nil || store.notice != nil)
         .overlay { contextOverlay.animation(feedback.pageAnimation, value: contextGameID).animation(feedback.focusAnimation, value: contextIndex) }
         .overlay { controlCenterOverlay.animation(feedback.pageAnimation, value: controlCenterOpen).animation(feedback.focusAnimation, value: controlCenterIndex) }
         .background {
-            LibraryKeyHandler(enabled: navigationActive) { command in
+            LibraryKeyHandler(enabled: navigationActive && !browserPage) { command in
                 navigate(command)
             }
         }
@@ -173,6 +200,18 @@ struct LibraryView: View {
         }
         .consoleSheet(isPresented: $searchOpen, onDismiss: { libraryFocused = true }) {
             SearchKeyboardView(query: $store.query) { searchOpen = false }
+        }
+        .consoleSheet(isPresented: Binding(get: { storeSignInURL != nil }, set: { if !$0 { storeSignInURL = nil } })) {
+            if let url = storeSignInURL {
+                StoreSignInBrowser(title: "Sign in to \(signInProvider.rawValue)", url: url) { code in
+                    let provider = signInProvider
+                    Task {
+                        if provider == .epic { await storefrontRuntime.completeEpicLogin(code: code, workspace: store.workspaceURL) }
+                        else { await storefrontRuntime.completeGOGLogin(code: code, workspace: store.workspaceURL) }
+                        await store.scan()
+                    }
+                }
+            }
         }
         .consoleSheet(isPresented: $showControllerStatus, onDismiss: { libraryFocused = true }) {
             ControllerStatusView()
@@ -202,15 +241,15 @@ struct LibraryView: View {
         .alert("MetalOS", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
             Button("OK") { store.notice = nil }
         } message: { Text(store.notice ?? "") }
-        .onKeyPress(.leftArrow) { guard navigationActive else { return .ignored }; navigate("left"); return .handled }
-        .onKeyPress(.rightArrow) { guard navigationActive else { return .ignored }; navigate("right"); return .handled }
-        .onKeyPress(.upArrow) { guard navigationActive else { return .ignored }; navigate("up"); return .handled }
-        .onKeyPress(.downArrow) { guard navigationActive else { return .ignored }; navigate("down"); return .handled }
-        .onKeyPress(.return) { guard navigationActive else { return .ignored }; navigate("confirm"); return .handled }
-        .onKeyPress(.escape) { guard navigationActive else { return .ignored }; navigate("back"); return .handled }
-        .onKeyPress(.space) { guard navigationActive else { return .ignored }; navigate("context"); return .handled }
-        .onKeyPress("m") { guard navigationActive else { return .ignored }; navigate("context"); return .handled }
-        .onKeyPress("p") { guard navigationActive else { return .ignored }; navigate("home"); return .handled }
+        .onKeyPress(.leftArrow) { guard navigationActive && !browserPage else { return .ignored }; navigate("left"); return .handled }
+        .onKeyPress(.rightArrow) { guard navigationActive && !browserPage else { return .ignored }; navigate("right"); return .handled }
+        .onKeyPress(.upArrow) { guard navigationActive && !browserPage else { return .ignored }; navigate("up"); return .handled }
+        .onKeyPress(.downArrow) { guard navigationActive && !browserPage else { return .ignored }; navigate("down"); return .handled }
+        .onKeyPress(.return) { guard navigationActive && !browserPage else { return .ignored }; navigate("confirm"); return .handled }
+        .onKeyPress(.escape) { guard navigationActive && !browserPage else { return .ignored }; navigate("back"); return .handled }
+        .onKeyPress(.space) { guard navigationActive && !browserPage else { return .ignored }; navigate("context"); return .handled }
+        .onKeyPress("m") { guard navigationActive && !browserPage else { return .ignored }; navigate("context"); return .handled }
+        .onKeyPress("p") { guard navigationActive && !browserPage else { return .ignored }; navigate("home"); return .handled }
         .focusable().focused($libraryFocused).focusEffectDisabled()
         .onChange(of: store.showSettings) { _, open in if !open { libraryFocused = true } }
         .onChange(of: store.showImport) { _, open in if !open { libraryFocused = true } }
@@ -240,12 +279,13 @@ struct LibraryView: View {
         HStack(spacing: 24) {
             Text("METALOS").font(.system(size: 11, weight: .bold, design: .rounded)).tracking(2.1).foregroundStyle(.white.opacity(0.62))
                 .padding(.trailing, 8)
-            pageTab("Games", selected: !appsPage, slot: 0) { selectPage(apps: false) }
+            pageTab("Games", selected: !appsPage && !libraryPage && !browserPage, slot: 0) { selectPage(apps: false) }
             pageTab("Media", selected: appsPage, slot: 1) { selectPage(apps: true) }
+            pageTab("Library", selected: libraryPage, slot: 2) { selectLibraryPage() }
             Spacer(minLength: 16)
-            toolbarButton("magnifyingglass", "Search games", slot: 2) { searchOpen = true }
+            toolbarButton("magnifyingglass", "Search games", slot: 3) { searchOpen = true }
                 .keyboardShortcut("f", modifiers: .command)
-            toolbarButton("gearshape", "Settings", slot: 3) { store.showSettings = true }
+            toolbarButton("gearshape", "Settings", slot: 4) { store.showSettings = true }
             Image(systemName: "person.crop.circle.fill")
                 .font(.system(size: 30, weight: .regular))
                 .foregroundStyle(.white.opacity(0.78))
@@ -274,23 +314,37 @@ struct LibraryView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 16) {
                     WelcomeTile(selected: welcomeSelected, focused: navigationActive && homeRow == 1 && welcomeSelected) {
-                        welcomeSelected = true; addCardSelected = false; libraryFocused = true
+                        welcomeSelected = true; addCardSelected = false; selectedStoreTile = nil; libraryFocused = true
                     }
                     ForEach(store.visibleGames) { game in
                         HomeTile(game: game, selected: !welcomeSelected && !addCardSelected && store.selected?.id == game.id,
                                  focused: navigationActive && homeRow == 1 && !welcomeSelected && !addCardSelected && store.selected?.id == game.id,
                                  building: store.builder.isBuilding && store.builder.currentGameID == game.id,
                                  progress: store.builder.progress) {
-                            welcomeSelected = false; addCardSelected = false; store.selectedID = game.id; libraryFocused = true
+                            welcomeSelected = false; addCardSelected = false; selectedStoreTile = nil; store.selectedID = game.id; libraryFocused = true
                         }.id(game.id).contextMenu { gameMenu(game) }
                     }
                     AddGameTile(selected: addCardSelected, focused: navigationActive && homeRow == 1 && addCardSelected) {
-                        addCardSelected = true; welcomeSelected = false; libraryFocused = true; store.importApp()
+                        addCardSelected = true; welcomeSelected = false; selectedStoreTile = nil; libraryFocused = true; store.importApp()
                     }
+                    StoreHomeTile(provider: .epic, selected: selectedStoreTile == 0,
+                                  focused: navigationActive && homeRow == 1 && selectedStoreTile == 0) { selectLibraryPage(provider: .epic) }
+                        .id("store-epic")
+                    StoreHomeTile(provider: .gog, selected: selectedStoreTile == 1,
+                                  focused: navigationActive && homeRow == 1 && selectedStoreTile == 1) { selectLibraryPage(provider: .gog) }
+                        .id("store-gog")
+                    BrowserHomeTile(selected: selectedStoreTile == 2,
+                                    focused: navigationActive && homeRow == 1 && selectedStoreTile == 2) { selectBrowserPage() }
+                        .id("store-browser")
                 }.padding(6)
             }
             .onChange(of: store.selectedID) { _, id in
                 if let id { withAnimation(.easeInOut(duration: 0.23)) { proxy.scrollTo(id, anchor: .center) } }
+            }
+            .onChange(of: selectedStoreTile) { _, index in
+                guard let index else { return }
+                let id = ["store-epic", "store-gog", "store-browser"][index]
+                withAnimation(.easeInOut(duration: 0.23)) { proxy.scrollTo(id, anchor: .center) }
             }
         }.frame(height: 165)
     }
@@ -471,6 +525,99 @@ struct LibraryView: View {
             }.padding(.bottom, 28)
         }
     }
+    private var storefrontLibraryView: some View {
+        let games = storefrontRuntime.selectedProvider == .epic ? storefrontRuntime.epicGames : storefrontRuntime.gogGames
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Library").font(.system(size: 32, weight: .light))
+                    Text("Games owned on Epic and GOG, with installs managed by MetalOS.")
+                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
+                }
+                Spacer()
+                Picker("Store", selection: $storefrontRuntime.selectedProvider) {
+                    ForEach(WindowsStorefront.allCases) { provider in Text(provider.rawValue).tag(provider) }
+                }.pickerStyle(.segmented).frame(width: 220)
+            }
+            HStack(spacing: 8) {
+                Button(storefrontRuntime.selectedProvider == .epic ? "Install Legendary" : "Install gogdl") {
+                    Task {
+                        if storefrontRuntime.selectedProvider == .epic { await storefrontRuntime.installLegendary(workspace: store.workspaceURL) }
+                        else { await storefrontRuntime.installGogdl(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath) }
+                    }
+                }.buttonStyle(ConsoleButtonStyle()).disabled(storefrontRuntime.isWorking || store.workspaceURL == nil)
+                Button("Sign in") {
+                    let provider = storefrontRuntime.selectedProvider
+                    if provider == .epic { storeSignInURL = storefrontRuntime.epicLoginURL(workspace: store.workspaceURL) }
+                    else {
+                        storeSignInURL = storefrontRuntime.gogLoginURL()
+                    }
+                    signInProvider = provider
+                }.buttonStyle(ConsoleButtonStyle()).disabled(storefrontRuntime.isWorking)
+                Button("Refresh") {
+                    Task {
+                        if storefrontRuntime.selectedProvider == .epic { await storefrontRuntime.refreshEpicGames(workspace: store.workspaceURL) }
+                        else { await storefrontRuntime.refreshGOGGames(workspace: store.workspaceURL) }
+                    }
+                }.buttonStyle(ConsoleButtonStyle()).disabled(storefrontRuntime.isWorking)
+                Spacer()
+                if storefrontRuntime.isWorking { ProgressView().controlSize(.small).tint(studioAccent) }
+                Text(storefrontRuntime.status).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+            }
+            ScrollView {
+                if games.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Your \(storefrontRuntime.selectedProvider.rawValue) games will appear here")
+                            .font(.system(size: 20, weight: .light))
+                        Text("Install the store tool, sign in, then refresh your library.")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 26)
+                } else {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: columns), spacing: 22) {
+                        ForEach(games.indices, id: \.self) { index in
+                            let item = games[index]
+                            let game = storefrontGame(item, provider: storefrontRuntime.selectedProvider)
+                            VStack(alignment: .leading, spacing: 9) {
+                                GameCard(game: game, selected: storefrontGameIndex == index, focused: navigationActive,
+                                         select: { storefrontGameIndex = index; libraryFocused = true },
+                                         launch: { store.launch(game) })
+                                Button(item.isInstalled ? "Play" : "Install") {
+                                    if item.isInstalled { store.launch(game) }
+                                    else {
+                                        Task {
+                                            await storefrontRuntime.install(item, provider: storefrontRuntime.selectedProvider,
+                                                                             workspace: store.workspaceURL, wineInstaller: windowsClientInstaller)
+                                            await store.scan()
+                                        }
+                                    }
+                                }.buttonStyle(ConsoleButtonStyle()).frame(maxWidth: .infinity)
+                                    .disabled(storefrontRuntime.isWorking || store.workspaceURL == nil)
+                            }
+                        }
+                    }
+                }
+            }
+            .onChange(of: storefrontRuntime.selectedProvider) { _, provider in
+                storefrontGameIndex = 0
+                Task {
+                    if provider == .epic { await storefrontRuntime.refreshEpicGames(workspace: store.workspaceURL) }
+                    else { await storefrontRuntime.refreshGOGGames(workspace: store.workspaceURL) }
+                }
+            }
+        }
+        .task {
+            if storefrontRuntime.selectedProvider == .epic { await storefrontRuntime.refreshEpicGames(workspace: store.workspaceURL) }
+            else { await storefrontRuntime.refreshGOGGames(workspace: store.workspaceURL) }
+        }
+    }
+    private func storefrontGame(_ item: WindowsStoreGame, provider: WindowsStorefront) -> Game {
+        let source: GameSource = provider == .epic ? .epic : .gog
+        let installPath = item.installedPath ?? "/MetalOS/not-installed/\(item.id)"
+        return Game(id: "owned:\(provider.rawValue.lowercased()):\(item.id)", title: item.title, source: source,
+                    launchURL: "metalos-store://\(provider == .epic ? "epic" : "gog")/\(item.id)", installPath: installPath,
+                    highballBottleName: provider.bottleName, windowsStoreProvider: provider == .epic ? "epic" : "gog",
+                    windowsStoreGameID: item.id)
+    }
     @ViewBuilder private func gameMenu(_ game: Game) -> some View {
         Button("Game options…") { openContext(for: game) }
         Button("Play game") { store.launch(game) }.disabled(!game.isAvailable)
@@ -495,11 +642,11 @@ struct LibraryView: View {
     }
     private var footer: some View {
         HStack(spacing: 24) {
-            hint("A", appsPage ? "Open app" : "Play game"); hint("X", "Options"); hint("☰", "Options"); hint("PS / P", "Control Center"); hint("LB / RB", "Games / Media"); hint("LB + RB + ☰", "Game Bar")
+            hint("A", libraryPage ? "Install / play" : appsPage ? "Open app" : "Play game"); hint("X", "Options"); hint("☰", "Options"); hint("PS / P", "Control Center"); hint("LB / RB", "Games / Media / Library"); hint("LB + RB + ☰", "Game Bar")
             Spacer()
             if store.isScanning { ProgressView().controlSize(.mini); Text("Discovering games") }
             else if store.builder.isBuilding { Button("Build in progress") { store.showBuild = true }.buttonStyle(ConsoleButtonStyle()) }
-            else { Text("\(store.visibleGames.count) \(appsPage ? "apps" : "games")") }
+            else { Text(libraryPage ? "\(storefrontGames.count) games" : browserPage ? browserSession.pageTitle : "\(store.visibleGames.count) \(appsPage ? "apps" : "games")") }
             Circle().fill(controller.name == nil ? .white.opacity(0.2) : studioAccent).frame(width: 5, height: 5)
             Button { showControllerStatus = true } label: { ControllerBatteryBadge() }.buttonStyle(ConsoleButtonStyle())
                 .help("Controller status").accessibilityLabel("Controller status")
@@ -605,6 +752,8 @@ struct LibraryView: View {
     private func requestRemoval(_ game: Game) { pendingRemoval = game }
     private func selectPage(apps: Bool) {
         appsPage = apps
+        libraryPage = false
+        browserPage = false
         store.showingApps = apps
         store.source = .all
         store.selectedID = store.visibleGames.first?.id
@@ -612,6 +761,27 @@ struct LibraryView: View {
         addCardSelected = false
         homeRow = 0
         topIndex = apps ? 1 : 0
+        libraryFocused = true
+    }
+    private func selectLibraryPage(provider: WindowsStorefront? = nil) {
+        appsPage = false
+        libraryPage = true
+        browserPage = false
+        store.showingApps = false
+        if let provider { storefrontRuntime.selectedProvider = provider }
+        store.source = .all
+        homeRow = 1
+        topIndex = 2
+        storefrontGameIndex = 0
+        libraryFocused = true
+    }
+    private func selectBrowserPage() {
+        appsPage = false
+        libraryPage = false
+        browserPage = true
+        store.showingApps = false
+        homeRow = 1
+        topIndex = 3
         libraryFocused = true
     }
     private var controlCenterOverlay: some View {
@@ -741,7 +911,14 @@ struct LibraryView: View {
         switch command {
         case "left", "right":
             let delta = command == "left" ? -1 : 1
-            if homeRow == 0 { topIndex = min(max(topIndex + delta, 0), 3) }
+            if homeRow == 0 { topIndex = min(max(topIndex + delta, 0), 4) }
+            else if libraryPage { storefrontGameIndex = min(max(storefrontGameIndex + delta, 0), max(storefrontGames.count - 1, 0)) }
+            else if browserPage { }
+            else if selectedStoreTile != nil {
+                if delta > 0 { selectedStoreTile = min((selectedStoreTile ?? 0) + 1, 2) }
+                else if selectedStoreTile == 0 { selectedStoreTile = nil; addCardSelected = true }
+                else { selectedStoreTile = 0 }
+            }
             else if homeRow == 2 && !appsPage { actionIndex = min(max(actionIndex + delta, 0), welcomeSelected ? 0 : 1) }
             else if homeRow == 3 && welcomeSelected { welcomeCardIndex = min(max(welcomeCardIndex + delta, 0), 2) }
             else if !appsPage {
@@ -756,7 +933,7 @@ struct LibraryView: View {
                         addCardSelected = false
                         if games.isEmpty { welcomeSelected = true }
                         else { store.selectedID = games.last?.id }
-                    }
+                    } else { addCardSelected = false; selectedStoreTile = 0 }
                 } else if let index = games.firstIndex(where: { $0.id == store.selected?.id }) {
                     if delta < 0 && index == 0 { welcomeSelected = true }
                     else if delta > 0 && index == games.count - 1 { addCardSelected = true }
@@ -764,12 +941,14 @@ struct LibraryView: View {
                 }
             } else { store.moveSelection(delta) }
         case "up":
-            if appsPage && homeRow != 0 {
+            if libraryPage && homeRow != 0 { homeRow = 0; topIndex = 2 }
+            else if appsPage && homeRow != 0 {
                 let index = store.visibleGames.firstIndex { $0.id == store.selected?.id } ?? 0
                 if index < columns { homeRow = 0; topIndex = 1 } else { store.moveSelection(-columns) }
             } else { homeRow = max(homeRow - 1, 0) }
         case "down":
             if homeRow == 0 { homeRow = 1 }
+            else if libraryPage { storefrontGameIndex += columns }
             else if appsPage { store.moveSelection(columns) }
             else { homeRow = min(homeRow + 1, welcomeSelected ? 3 : 2) }
         case "confirm":
@@ -777,12 +956,25 @@ struct LibraryView: View {
                 switch topIndex {
                 case 0: selectPage(apps: false)
                 case 1: selectPage(apps: true)
-                case 2: searchOpen = true
-                case 3: store.showSettings = true
+                case 2: selectLibraryPage()
+                case 3: searchOpen = true
+                case 4: store.showSettings = true
                 default: break
                 }
+            } else if libraryPage {
+                let games = storefrontGames
+                if games.indices.contains(storefrontGameIndex) {
+                    let item = games[storefrontGameIndex]
+                    let game = storefrontGame(item, provider: storefrontRuntime.selectedProvider)
+                    if item.isInstalled { store.launch(game) }
+                    else { Task { await storefrontRuntime.install(item, provider: storefrontRuntime.selectedProvider, workspace: store.workspaceURL, wineInstaller: windowsClientInstaller); await store.scan() } }
+                }
+            } else if browserPage {
+                break
             } else if homeRow == 1 && !appsPage {
-                if addCardSelected { store.importApp() }
+                if selectedStoreTile == 0 { selectLibraryPage(provider: .epic) }
+                else if selectedStoreTile == 1 { selectLibraryPage(provider: .gog) }
+                else if addCardSelected { store.importApp() }
                 else if !welcomeSelected, let game = store.selected { store.launch(game) }
             } else if homeRow == 2 && !appsPage {
                 if welcomeSelected { store.showImport = true }
@@ -795,14 +987,18 @@ struct LibraryView: View {
             } else if let game = store.selected { store.launch(game) }
             else { store.importApp() }
         case "favorite": if let game = store.selected { store.favorite(game) }
-        case "previous":
-            selectPage(apps: !appsPage)
-        case "next":
-            selectPage(apps: !appsPage)
+        case "previous", "next":
+            if browserPage { selectPage(apps: false); break }
+            let delta = command == "next" ? 1 : -1
+            let current = libraryPage ? 2 : appsPage ? 1 : 0
+            let next = (current + delta + 3) % 3
+            if next == 0 { selectPage(apps: false) }
+            else if next == 1 { selectPage(apps: true) }
+            else { selectLibraryPage() }
         case "back":
             if searchOpen { searchOpen = false }
             else if homeRow != 1 { homeRow = 1 }
-            else if appsPage { selectPage(apps: false) }
+            else if appsPage || libraryPage || browserPage { selectPage(apps: false) }
             else if store.console { store.toggleConsole() }
         case "menu", "context": if let game = store.selected { openContext(for: game) } else { store.importApp() }
         case "details": if let game = store.selected { openContext(for: game) }
@@ -919,6 +1115,55 @@ private struct HomeTile: View {
             .accessibilityAddTraits(selected ? [.isSelected] : [])
             .animation(ConsoleFeedback.shared.focusAnimation, value: selected)
 
+    }
+}
+private struct StoreHomeTile: View {
+    let provider: WindowsStorefront
+    let selected: Bool
+    let focused: Bool
+    let open: () -> Void
+    private var accent: Color { provider == .epic ? Color.white : Color(red: 0.18, green: 0.42, blue: 0.9) }
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 10) {
+                RoundedRectangle(cornerRadius: 14).fill(accent.opacity(0.12))
+                    .frame(width: 92, height: 92)
+                    .overlay {
+                        VStack(spacing: 7) {
+                            Image(systemName: provider == .epic ? "e.square.fill" : "g.square.fill")
+                                .font(.system(size: 30, weight: .light)).foregroundStyle(accent)
+                            Text("STORE").font(.system(size: 7, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(selected ? 0.26 : 0.08)))
+                    .consoleFocus(focused, cornerRadius: 14, scale: 1.075)
+                Text(provider.rawValue).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    .foregroundStyle(.white.opacity(0.72)).frame(width: 92, alignment: .leading)
+            }.padding(.top, 8).frame(height: 162, alignment: .top)
+        }.buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Open \(provider.rawValue) store library")
+    }
+}
+private struct BrowserHomeTile: View {
+    let selected: Bool
+    let focused: Bool
+    let open: () -> Void
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 10) {
+                RoundedRectangle(cornerRadius: 14).fill(Color(red: 0.04, green: 0.29, blue: 0.58).opacity(0.25))
+                    .frame(width: 92, height: 92)
+                    .overlay {
+                        VStack(spacing: 7) {
+                            Image(systemName: "safari.fill").font(.system(size: 34, weight: .light)).foregroundStyle(.white.opacity(0.9))
+                            Text("WEB").font(.system(size: 7, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(focused ? 0.3 : 0.09)))
+                    .consoleFocus(focused, cornerRadius: 14, scale: 1.075)
+                Text("Internet Browser").font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    .foregroundStyle(.white.opacity(0.72)).frame(width: 112, alignment: .leading)
+            }.padding(.top, 8).frame(height: 162, alignment: .top)
+        }.buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Open Internet Browser")
     }
 }
 private struct WelcomeTile: View {

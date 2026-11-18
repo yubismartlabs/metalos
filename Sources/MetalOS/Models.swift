@@ -44,6 +44,8 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var windowsBottlePath: String? = nil
     var highballLibraryID: String? = nil
     var highballBottleName: String? = nil
+    var windowsStoreProvider: String? = nil
+    var windowsStoreGameID: String? = nil
     var isGame: Bool { isGameApp ?? (source != .native || id.hasPrefix("app:") || id.hasPrefix("manual:")) }
     var isAvailable: Bool { FileManager.default.fileExists(atPath: installPath) }
 }

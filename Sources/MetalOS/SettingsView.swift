@@ -20,7 +20,7 @@ private enum ConsoleSettingsCategory: String, CaseIterable, Identifiable {
         case .controllers: "Your controller. Your connection."
         case .artwork: "A face for every game."
         case .engine: "Install the MetalOS NXNative fork or choose your own checkout."
-        case .windowsGaming: "Manage Steam and Rockstar with Highball’s CLI runtime."
+        case .windowsGaming: "Manage Windows games with Highball, Legendary, and gogdl."
         case .storage: "Your Switch games and app data, together."
         }
     }
@@ -30,6 +30,7 @@ struct SettingsView: View {
     @StateObject private var engineInstaller = NXNativeInstaller()
     @StateObject private var windowsWineInstaller = WindowsWineInstaller()
     @StateObject private var windowsClientInstaller = WindowsClientInstaller()
+    @StateObject private var storefrontRuntime = WindowsStorefrontRuntime()
     @ObservedObject private var feedback = ConsoleFeedback.shared
     @ObservedObject private var controllers = ControllerManager.shared
     @Environment(\.dismiss) var dismiss
@@ -41,6 +42,7 @@ struct SettingsView: View {
     @State private var actionIndex = 0
     @State private var showControllers = false
     @State private var showTester = false
+    @State private var showStorefront = false
     @State private var pickerIndex: Int?
     @State private var pendingHighballBottleName: String?
     @State private var selectInstalledFork = false
@@ -103,6 +105,10 @@ struct SettingsView: View {
             .consoleSheet(isPresented: $showControllers) { ControllerStatusView() }
             .consoleSheet(isPresented: $showTester) {
                 GamepadTesterView()
+            }
+            .consoleSheet(isPresented: $showStorefront) {
+                WindowsStorefrontView(runtime: storefrontRuntime, windowsClientInstaller: windowsClientInstaller)
+                    .environmentObject(store)
             }
             .consoleSheet(isPresented: $engineInstaller.confirmUpdate) {
                 ActionConfirmationView(title: "NXNative update available", message: engineInstaller.updateStatus, confirmTitle: "Install update") {
@@ -280,7 +286,9 @@ struct SettingsView: View {
             actionRow(6, title: "Get Apple Game Porting Toolkit", subtitle: "Opens Apple’s download page. GPTK stays a separate, user-initiated install.", symbol: "apple.logo", value: "Open")
             if windowsClientInstaller.isWorking { ProgressView().tint(studioAccent) }
             note(windowsClientInstaller.status)
-            note("New Windows clients and games use Highball’s CLI and managed bottles. Standalone installers use Highball’s default engine; Steam and Rockstar use their tested recipes. The legacy Wine runtime remains for existing bottles. Individual game and anti-cheat compatibility varies.")
+            actionRow(7, title: "Browse Epic Games", subtitle: "Legendary handles Epic sign-in and installs; Highball provides the Windows bottle.", symbol: "e.square.fill", value: "Open", enabled: store.workspaceURL != nil)
+            actionRow(8, title: "Browse GOG Games", subtitle: "gogdl handles GOG sign-in and downloads; Highball provides the Windows bottle.", symbol: "g.square.fill", value: "Open", enabled: store.workspaceURL != nil)
+            note("New Windows clients and games use Highball’s CLI and managed bottles. Epic uses Legendary; GOG uses Heroic gogdl. Standalone installers use Highball’s default engine; Steam and Rockstar use their tested recipes. The legacy Wine runtime remains for existing bottles. Individual game and anti-cheat compatibility varies.")
         case .storage:
             actionRow(0, title: "Game library and app data", subtitle: store.workspacePath, symbol: "externaldrive", value: "Open")
             actionRow(1, title: "Scan Switch games", subtitle: store.isScanning ? "Checking this folder…" : "Find Switch game folders in your selected location.", symbol: "arrow.clockwise", value: store.isScanning ? "Scanning" : "Scan", enabled: !store.isScanning)
@@ -307,7 +315,7 @@ struct SettingsView: View {
     }
     private func note(_ text: String) -> some View { Text(text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.42)).lineSpacing(5).fixedSize(horizontal: false, vertical: true) }
     private var actionCount: Int {
-        switch category { case .console: 6; case .controllers: 2; case .artwork: 1; case .engine: 5; case .windowsGaming: 7; case .storage: 2 }
+        switch category { case .console: 6; case .controllers: 2; case .artwork: 1; case .engine: 5; case .windowsGaming: 9; case .storage: 2 }
     }
     private func pickerStartingPath(_ index: Int) -> String? {
         index == 2 && !store.data.settings.keysPath.isEmpty ? store.data.settings.keysPath : nil
@@ -430,6 +438,8 @@ struct SettingsView: View {
             }
             else if index == 5 { pickerIndex = 5 }
             else if index == 6, let url = URL(string: "https://developer.apple.com/games/game-porting-toolkit/") { NSWorkspace.shared.open(url) }
+            else if index == 7 { storefrontRuntime.selectedProvider = .epic; showStorefront = true }
+            else if index == 8 { storefrontRuntime.selectedProvider = .gog; showStorefront = true }
         case .storage:
             if index == 0 {
                 if let workspace = store.workspaceURL { NSWorkspace.shared.open(workspace) }

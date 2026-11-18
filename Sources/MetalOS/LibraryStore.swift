@@ -211,6 +211,7 @@ final class LibraryStore: ObservableObject {
             discovered += GameDiscovery.windowsClientLaunchers(in: workspaceURL)
             discovered += GameDiscovery.windowsSteamGames(in: workspaceURL)
             discovered += await HighballLibraryDiscovery.scan(workspace: workspaceURL)
+            discovered += await StorefrontLibraryDiscovery.scan(workspace: workspaceURL)
         }
         mergeDiscoveredGames(discovered)
         scanWarnings = result.warnings
@@ -238,6 +239,8 @@ final class LibraryStore: ObservableObject {
                     data.games[index].launchURL = game.launchURL
                     if let libraryID = game.highballLibraryID { data.games[index].highballLibraryID = libraryID }
                     if let bottleName = game.highballBottleName { data.games[index].highballBottleName = bottleName }
+                    if let provider = game.windowsStoreProvider { data.games[index].windowsStoreProvider = provider }
+                    if let storeID = game.windowsStoreGameID { data.games[index].windowsStoreGameID = storeID }
                 }
                 if let path = game.artworkPath { data.games[index].artworkPath = path }
             } else { data.games.append(game) }
@@ -285,6 +288,10 @@ final class LibraryStore: ObservableObject {
     }
     func launch(_ game: Game) {
         guard game.isAvailable else { notice = "This game is unavailable. Connect its drive or check its installation path."; return }
+        if let provider = game.windowsStoreProvider, let storeID = game.windowsStoreGameID {
+            launchWindowsStoreGame(game, provider: provider, gameID: storeID)
+            return
+        }
         if let executable = game.windowsExecutablePath, let bottle = game.windowsBottlePath {
             launchWindowsExecutable(game, executablePath: executable, bottlePath: bottle)
             return
@@ -320,6 +327,42 @@ final class LibraryStore: ObservableObject {
                 }
             }
         }
+    }
+    private func launchWindowsStoreGame(_ game: Game, provider: String, gameID: String) {
+        guard let workspaceURL, let bottleName = game.highballBottleName,
+              let wine = WindowsRuntimeLayout.highballWineExecutable(in: workspaceURL) else {
+            notice = "Install the Highball Windows runtime and store bottle in Settings → Windows Gaming first."
+            return
+        }
+        let bottle = WindowsRuntimeLayout.highballHome(in: workspaceURL).appendingPathComponent("bottles/\(bottleName)", isDirectory: true)
+        let executable: URL
+        var arguments: [String]
+        if provider == "epic" {
+            executable = WindowsRuntimeLayout.legendaryCLI(in: workspaceURL)
+            arguments = ["launch", gameID, "--wine", wine.path, "--wine-prefix", bottle.path]
+        } else if provider == "gog" {
+            executable = WindowsRuntimeLayout.gogdlCLI(in: workspaceURL)
+            arguments = ["--auth-config-path", WindowsRuntimeLayout.gogAuth(in: workspaceURL).path,
+                         "launch", game.installPath, gameID, "--platform", "windows", "--wine", wine.path, "--wine-prefix", bottle.path]
+        } else {
+            notice = "This Windows game store is not supported."
+            return
+        }
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            notice = "The \(provider == "epic" ? "Legendary" : "gogdl") command is missing. Reinstall its store backend in Settings → Windows Gaming."
+            return
+        }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: game.installPath, isDirectory: true)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
+        } catch { notice = "Could not launch \(game.title): \(error.localizedDescription)" }
     }
     private func launchHighballClient(_ game: Game, client: String) {
         guard let workspaceURL, ["steam", "rockstar"].contains(client) else {

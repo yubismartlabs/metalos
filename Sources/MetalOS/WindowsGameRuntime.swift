@@ -37,6 +37,15 @@ enum WindowsRuntimeLayout {
     static func highballCLI(in workspace: URL) -> URL {
         highballRepository(in: workspace).appendingPathComponent(".build/release/highball")
     }
+    static func legendaryCLI(in workspace: URL) -> URL {
+        root(in: workspace).appendingPathComponent("Tools/legendary/legendary")
+    }
+    static func gogdlCLI(in workspace: URL) -> URL {
+        root(in: workspace).appendingPathComponent("Tools/heroic-gogdl/.venv/bin/gogdl")
+    }
+    static func gogAuth(in workspace: URL) -> URL {
+        root(in: workspace).appendingPathComponent("GOG/auth.json")
+    }
     static func bottle(_ name: String, in workspace: URL) -> URL {
         bottles(in: workspace).appendingPathComponent(name, isDirectory: true)
     }
@@ -45,6 +54,15 @@ enum WindowsRuntimeLayout {
         let candidates = ["bin/wine64", "bin/wine", "wine.app/Contents/Resources/wine/bin/wine64"]
         if let direct = candidates.map({ base.appendingPathComponent($0) }).first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) { return direct }
         guard let enumerator = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.isExecutableKey], options: [.skipsHiddenFiles]) else { return nil }
+        while let file = enumerator.nextObject() as? URL {
+            if ["wine64", "wine"].contains(file.lastPathComponent), file.pathComponents.contains("bin"),
+               (try? file.resourceValues(forKeys: [.isExecutableKey]).isExecutable) == true { return file }
+        }
+        return nil
+    }
+    static func highballWineExecutable(in workspace: URL) -> URL? {
+        let engines = highballHome(in: workspace).appendingPathComponent("engines", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(at: engines, includingPropertiesForKeys: [.isExecutableKey], options: [.skipsHiddenFiles]) else { return nil }
         while let file = enumerator.nextObject() as? URL {
             if ["wine64", "wine"].contains(file.lastPathComponent), file.pathComponents.contains("bin"),
                (try? file.resourceValues(forKeys: [.isExecutableKey]).isExecutable) == true { return file }
@@ -60,6 +78,12 @@ private struct HighballLibraryListing: Decodable, Sendable {
     let environment: String?
     let installed: Bool
     let installedOnMac: Bool
+}
+
+struct ManagedWindowsBottle: Sendable {
+    let name: String
+    let prefix: URL
+    let wineExecutable: URL
 }
 
 enum HighballLibraryDiscovery {
@@ -92,8 +116,6 @@ enum HighballLibraryDiscovery {
                     let source: GameSource
                     switch entry.source {
                     case "steam": source = .steam
-                    case "epic": source = .epic
-                    case "gog": source = .gog
                     case "pin": source = .windows
                     default: return nil
                     }
@@ -103,6 +125,70 @@ enum HighballLibraryDiscovery {
                                 installPath: bottle.path, highballLibraryID: entry.id, highballBottleName: bottleName)
                 }
             } catch { return [] }
+        }.value
+    }
+}
+
+enum StorefrontLibraryDiscovery {
+    private struct EpicInstalledGame: Decodable {
+        let appName: String
+        let title: String
+        let installPath: String
+        let isDLC: Bool?
+        enum CodingKeys: String, CodingKey { case appName = "app_name", title, installPath = "install_path", isDLC = "is_dlc" }
+    }
+
+    static func scan(workspace: URL) async -> [Game] {
+        var games = await epicGames(workspace: workspace)
+        games += gogGames(workspace: workspace)
+        return games
+    }
+
+    private static func epicGames(workspace: URL) async -> [Game] {
+        let cli = WindowsRuntimeLayout.legendaryCLI(in: workspace)
+        guard FileManager.default.isExecutableFile(atPath: cli.path) else { return [] }
+        do {
+            let output = try await run(cli, ["list-installed", "--json", "--show-dirs"])
+            let entries = try JSONDecoder().decode([EpicInstalledGame].self, from: Data(output.utf8))
+            return entries.compactMap { entry in
+                guard entry.isDLC != true, FileManager.default.fileExists(atPath: entry.installPath) else { return nil }
+                return Game(id: "legendary:\(entry.appName)", title: entry.title, source: .epic,
+                            launchURL: "metalos-store://epic/\(entry.appName)", installPath: entry.installPath,
+                            highballBottleName: "MetalOS-Epic", windowsStoreProvider: "epic", windowsStoreGameID: entry.appName)
+            }
+        } catch { return [] }
+    }
+
+    private static func gogGames(workspace: URL) -> [Game] {
+        let root = WindowsRuntimeLayout.highballHome(in: workspace)
+            .appendingPathComponent("bottles/MetalOS-GOG/drive_c/Program Files/MetalOS/GOG", isDirectory: true)
+        let manager = FileManager.default
+        guard let folders = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        let infoFiles = folders.flatMap { folder -> [URL] in
+            guard (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                  let children = try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
+            return children.filter { $0.lastPathComponent.hasPrefix("goggame-") && $0.pathExtension == "info" }
+        }
+        return infoFiles.compactMap { file in
+            guard let data = try? Data(contentsOf: file),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = object["rootGameId"] as? Int else { return nil }
+            let title = object["name"] as? String ?? file.deletingLastPathComponent().lastPathComponent
+            let path = file.deletingLastPathComponent().path
+            return Game(id: "gog:\(id)", title: title, source: .gog,
+                        launchURL: "metalos-store://gog/\(id)", installPath: path,
+                        highballBottleName: "MetalOS-GOG", windowsStoreProvider: "gog", windowsStoreGameID: String(id))
+        }
+    }
+
+    private static func run(_ executable: URL, _ arguments: [String]) async throws -> String {
+        try await Task.detached(priority: .utility) {
+            let process = Process(); let output = Pipe()
+            process.executableURL = executable; process.arguments = arguments
+            process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+            try process.run(); let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+            guard process.terminationStatus == 0 else { throw StudioError.message("Legendary could not read the installed game list.") }
+            return String(decoding: data, as: UTF8.self)
         }.value
     }
 }
@@ -385,13 +471,13 @@ final class WindowsClientInstaller: ObservableObject {
         }
     }
 
-    private struct HighballSetup {
+    struct HighballSetup {
         let binary: URL
         let repository: URL
         let home: URL
     }
 
-    private func prepareHighballCLI(workspace: URL, updateSource: Bool = true) async throws -> HighballSetup {
+    func prepareHighballCLI(workspace: URL, updateSource: Bool = true) async throws -> HighballSetup {
         let tools = WindowsRuntimeLayout.root(in: workspace).appendingPathComponent("Tools", isDirectory: true)
         let repository = WindowsRuntimeLayout.highballRepository(in: workspace)
         let database = tools.appendingPathComponent("highball-db", isDirectory: true)
@@ -428,6 +514,33 @@ final class WindowsClientInstaller: ObservableObject {
         }
         let home = WindowsRuntimeLayout.highballHome(in: workspace)
         return HighballSetup(binary: binary, repository: repository, home: home)
+    }
+
+    func prepareStoreBottle(name: String, workspace: URL) async throws -> ManagedWindowsBottle {
+        let setup = try await prepareHighballCLI(workspace: workspace)
+        let manifest = setup.repository.appendingPathComponent("spike/engine-manifest.json")
+        let engineID = try await ensureHighballEngine(manifest: manifest, label: name, setup: setup)
+        let listing = try await runCLI(setup.binary, ["bottle", "list"], repository: setup.repository, home: setup.home)
+        let exists = listing.split(separator: "\n").contains { $0.hasPrefix(name + "\t") }
+        if !exists {
+            status = "Creating the \(name) Windows bottle…"
+            _ = try await runCLI(setup.binary, ["bottle", "create", name, "--engine", engineID], repository: setup.repository, home: setup.home)
+        }
+        let prefix = setup.home.appendingPathComponent("bottles/\(name)", isDirectory: true)
+        let engineRoot = setup.home.appendingPathComponent("engines/\(engineID)", isDirectory: true)
+        guard let wine = Self.findWineExecutable(in: engineRoot) else {
+            throw StudioError.message("Highball installed the \(name) bottle, but its Wine executable could not be found.")
+        }
+        return ManagedWindowsBottle(name: name, prefix: prefix, wineExecutable: wine)
+    }
+
+    private nonisolated static func findWineExecutable(in root: URL) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isExecutableKey], options: [.skipsHiddenFiles]) else { return nil }
+        while let file = enumerator.nextObject() as? URL {
+            if ["wine64", "wine"].contains(file.lastPathComponent), file.pathComponents.contains("bin"),
+               (try? file.resourceValues(forKeys: [.isExecutableKey]).isExecutable) == true { return file }
+        }
+        return nil
     }
 
     private func runCLI(_ binary: URL, _ arguments: [String], repository: URL, home: URL) async throws -> String {
