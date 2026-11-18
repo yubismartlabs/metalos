@@ -316,18 +316,18 @@ struct LibraryView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 16) {
                     WelcomeTile(selected: welcomeSelected, focused: navigationActive && homeRow == 1 && welcomeSelected) {
-                        welcomeSelected = true; addCardSelected = false; selectedStoreTile = nil; libraryFocused = true
+                        welcomeSelected = true; addCardSelected = false; selectedStoreTile = nil; homeRow = 1; libraryFocused = true
                     }
                     ForEach(store.visibleGames) { game in
                         HomeTile(game: game, selected: !welcomeSelected && !addCardSelected && store.selected?.id == game.id,
                                  focused: navigationActive && homeRow == 1 && !welcomeSelected && !addCardSelected && store.selected?.id == game.id,
                                  building: store.builder.isBuilding && store.builder.currentGameID == game.id,
                                  progress: store.builder.progress) {
-                            welcomeSelected = false; addCardSelected = false; selectedStoreTile = nil; store.selectedID = game.id; libraryFocused = true
+                            welcomeSelected = false; addCardSelected = false; selectedStoreTile = nil; homeRow = 1; store.selectedID = game.id; libraryFocused = true
                         }.id(game.id).contextMenu { gameMenu(game) }
                     }
                     AddGameTile(selected: addCardSelected, focused: navigationActive && homeRow == 1 && addCardSelected) {
-                        addCardSelected = true; welcomeSelected = false; selectedStoreTile = nil; libraryFocused = true; store.importApp()
+                        addCardSelected = true; welcomeSelected = false; selectedStoreTile = nil; homeRow = 1; libraryFocused = true; store.importApp()
                     }
                     StoreHomeTile(provider: .epic, selected: selectedStoreTile == 0,
                                   focused: navigationActive && homeRow == 1 && selectedStoreTile == 0) { selectLibraryPage(provider: .epic) }
@@ -508,23 +508,32 @@ struct LibraryView: View {
         }
     }
     private var appsView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack {
-                    Text("Media").font(.system(size: 32, weight: .light))
-                    Text("\(store.visibleGames.count)").font(.system(size: 13)).foregroundStyle(studioAccent)
-                    Spacer()
-                }
-                if store.visibleGames.isEmpty { emptyLibrary }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 22), count: columns), spacing: 28) {
-                    ForEach(store.visibleGames) { game in
-                        GameCard(game: game, selected: store.selected?.id == game.id, focused: navigationActive && homeRow == 1,
-                                 building: store.builder.isBuilding && store.builder.currentGameID == game.id,
-                                 progress: store.builder.progress) { store.selectedID = game.id; libraryFocused = true } launch: { store.launch(game) }
-                            .contextMenu { gameMenu(game) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    HStack {
+                        Text("Media").font(.system(size: 32, weight: .light))
+                        Text("\(store.visibleGames.count)").font(.system(size: 13)).foregroundStyle(studioAccent)
+                        Spacer()
                     }
-                }
-            }.padding(.bottom, 28)
+                    if store.visibleGames.isEmpty { emptyLibrary }
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 22), count: columns), spacing: 28) {
+                        ForEach(store.visibleGames) { game in
+                            GameCard(game: game, selected: store.selected?.id == game.id, focused: navigationActive && homeRow == 1,
+                                     building: store.builder.isBuilding && store.builder.currentGameID == game.id,
+                                     progress: store.builder.progress) { store.selectedID = game.id; homeRow = 1; libraryFocused = true } launch: { store.launch(game) }
+                                .contextMenu { gameMenu(game) }
+                                .id(game.id)
+                        }
+                    }
+                }.padding(.bottom, 28)
+            }
+            .onChange(of: store.selectedID) { _, id in
+                if let id { withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) } }
+            }
+            .onAppear {
+                if let id = store.selected?.id { proxy.scrollTo(id, anchor: .center) }
+            }
         }
     }
     private var storefrontLibraryView: some View {
@@ -781,6 +790,7 @@ struct LibraryView: View {
         store.selectedID = store.visibleGames.first?.id
         welcomeSelected = !apps && store.visibleGames.isEmpty
         addCardSelected = false
+        selectedStoreTile = nil
         homeRow = 0
         topIndex = apps ? 1 : 0
         libraryFocused = true
@@ -973,7 +983,7 @@ struct LibraryView: View {
                     else if delta > 0 && index == games.count - 1 { addCardSelected = true }
                     else { store.moveSelection(delta) }
                 }
-            } else { store.moveSelection(delta) }
+            } else { moveMediaSelection(horizontal: delta) }
         case "up":
             if libraryPage && storefrontFocusZone == 2 && storefrontGameIndex >= columns { storefrontGameIndex -= columns }
             else if libraryPage && storefrontFocusZone > 0 {
@@ -985,7 +995,7 @@ struct LibraryView: View {
             else if libraryPage && homeRow != 0 { homeRow = 0; topIndex = 2 }
             else if appsPage && homeRow != 0 {
                 let index = store.visibleGames.firstIndex { $0.id == store.selected?.id } ?? 0
-                if index < columns { homeRow = 0; topIndex = 1 } else { store.moveSelection(-columns) }
+                if index < columns { homeRow = 0; topIndex = 1 } else { moveMediaSelection(vertical: -1) }
             } else { homeRow = max(homeRow - 1, 0) }
         case "down":
             if homeRow == 0 { homeRow = 1 }
@@ -993,7 +1003,7 @@ struct LibraryView: View {
                 if storefrontFocusZone < 2 { storefrontFocusZone += 1; storefrontActionIndex = 0 }
                 else { storefrontGameIndex = min(storefrontGameIndex + columns, max(storefrontGames.count - 1, 0)) }
             }
-            else if appsPage { store.moveSelection(columns) }
+            else if appsPage { moveMediaSelection(vertical: 1) }
             else { homeRow = min(homeRow + 1, welcomeSelected ? 3 : 2) }
         case "confirm":
             if homeRow == 0 {
@@ -1038,6 +1048,7 @@ struct LibraryView: View {
             } else if homeRow == 1 && !appsPage {
                 if selectedStoreTile == 0 { selectLibraryPage(provider: .epic) }
                 else if selectedStoreTile == 1 { selectLibraryPage(provider: .gog) }
+                else if selectedStoreTile == 2 { selectBrowserPage() }
                 else if addCardSelected { store.importApp() }
                 else if !welcomeSelected, let game = store.selected { store.launch(game) }
             } else if homeRow == 2 && !appsPage {
@@ -1068,6 +1079,28 @@ struct LibraryView: View {
         case "details": if let game = store.selected { openContext(for: game) }
         default: break
         }
+    }
+
+    private func moveMediaSelection(horizontal deltaX: Int = 0, vertical deltaY: Int = 0) {
+        let games = store.visibleGames
+        guard !games.isEmpty else { return }
+        let index = games.firstIndex(where: { $0.id == store.selected?.id }) ?? 0
+        let row = index / columns
+        let column = index % columns
+        let target: Int
+        if deltaX != 0 {
+            let nextColumn = column + deltaX
+            guard (0..<columns).contains(nextColumn) else { return }
+            target = row * columns + nextColumn
+        } else if deltaY != 0 {
+            let nextRow = row + deltaY
+            guard nextRow >= 0 else { return }
+            let rowStart = nextRow * columns
+            guard rowStart < games.count else { return }
+            target = min(rowStart + column, min(rowStart + columns, games.count) - 1)
+        } else { return }
+        guard games.indices.contains(target) else { return }
+        store.selectedID = games[target].id
     }
 
     private func handleProfileUpdateToast(_ command: String) -> Bool {
