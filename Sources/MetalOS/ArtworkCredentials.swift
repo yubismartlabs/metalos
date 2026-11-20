@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 import Combine
 
@@ -23,9 +24,15 @@ final class ArtworkCredentialStore: ObservableObject {
         var request = query
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
+        // A development build can have a different Keychain identity from the
+        // installed app. Never interrupt launch with a Keychain access dialog.
+        let authenticationContext = LAContext()
+        authenticationContext.interactionNotAllowed = true
+        request[kSecUseAuthenticationContext as String] = authenticationContext
         var item: CFTypeRef?
         let status = SecItemCopyMatching(request as CFDictionary, &item)
         guard status != errSecItemNotFound else { return }
+        guard status != errSecInteractionNotAllowed else { return }
         guard status == errSecSuccess, let bytes = item as? Data else { message = "Could not load artwork credentials from Keychain."; return }
         do {
             let credentials = try JSONDecoder().decode(ArtworkCredentials.self, from: bytes)

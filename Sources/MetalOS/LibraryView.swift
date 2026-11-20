@@ -250,7 +250,7 @@ struct LibraryView: View {
                 navigate(command)
             }
         }
-        .background(studioBackground).tint(studioAccent)
+        .background(studioBackground.ignoresSafeArea()).tint(studioAccent)
         .consoleSheet(isPresented: Binding(get: { browseInstallation != nil }, set: { if !$0 { browseInstallation = nil } })) {
             ConsoleFilePicker(title: "Game installation", mode: .file, startingPath: browseInstallation) { _ in browseInstallation = nil }
         }
@@ -327,7 +327,10 @@ struct LibraryView: View {
         .onChange(of: store.showSettings) { _, open in if !open { libraryFocused = true } }
         .onChange(of: store.showImport) { _, open in if !open { libraryFocused = true } }
         .onChange(of: store.showBuild) { _, open in if !open { libraryFocused = true } }
-        .onChange(of: store.console) { _, _ in libraryFocused = true }
+        .onChange(of: store.console) { _, enabled in
+            libraryFocused = true
+            NSApp.presentationOptions = enabled ? [.autoHideDock, .autoHideMenuBar] : []
+        }
         .task(id: store.setupComplete) {
             guard store.setupComplete else { return }
             libraryFocused = true
@@ -340,7 +343,10 @@ struct LibraryView: View {
                 }
                 return handleProfileUpdateToast(command)
             }
-            if store.console, let window = NSApp.windows.first, !window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+            if store.console {
+                NSApp.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+                if let window = NSApp.windows.first, !window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+            }
             store.prepareArtwork()
             await store.scan()
             refreshWelcomeStats()
