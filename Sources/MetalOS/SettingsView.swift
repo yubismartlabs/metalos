@@ -361,40 +361,40 @@ private struct SettingsSectionPage: View {
             }
             .padding(.bottom, 24)
 
-            if let summary = section.summary {
-                Text(summary)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 20)
-            }
-
-            if !section.features.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(Array(section.features.enumerated()), id: \.element.id) { index, feature in
-                        Group {
-                            if section == .accessories {
-                                Button {
-                                    activateAccessory(index)
-                                } label: {
-                                    featureRow(feature)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if let summary = section.summary {
+                        Text(summary)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .lineSpacing(4)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !section.features.isEmpty {
+                        VStack(spacing: 0) {
+                            ForEach(Array(section.features.enumerated()), id: \.element.id) { index, feature in
+                                Group {
+                                    if section == .accessories {
+                                        Button { activateAccessory(index) } label: { featureRow(feature) }
+                                            .buttonStyle(ConsoleButtonStyle())
+                                            .consoleFocus(selectedFeatureIndex == index, cornerRadius: 10, scale: 1.015)
+                                    } else {
+                                        featureRow(feature)
+                                    }
                                 }
-                                .buttonStyle(ConsoleButtonStyle())
-                                .consoleFocus(selectedFeatureIndex == index, cornerRadius: 10, scale: 1.015)
-                            } else {
-                                featureRow(feature)
+                                if index < section.features.count - 1 {
+                                    Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
+                                }
                             }
                         }
-
-                        if index < section.features.count - 1 {
-                            Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
-                        }
+                        .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
-                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(maxWidth: 900)
+                .padding(.horizontal, 42)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 34)
         .padding(.top, 27)
@@ -564,6 +564,14 @@ private struct SystemMenuDetailPage: View {
     @ObservedObject private var appearance = StudioAppearance.shared
 
     var body: some View {
+        if item == .systemSoftware {
+            SystemSoftwareSettingsPage()
+        } else {
+            detailPage
+        }
+    }
+
+    private var detailPage: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 14) {
                 Button { dismiss() } label: {
@@ -584,47 +592,50 @@ private struct SystemMenuDetailPage: View {
                 Spacer()
             }
 
-            if let summary = item.summary {
-                Text(summary)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 22)
-                    .padding(.bottom, 20)
-            }
-
-            if !item.features.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(Array(item.features.enumerated()), id: \.element.id) { index, feature in
-                        HStack(spacing: 16) {
-                            Image(systemName: feature.symbol)
-                                .font(.system(size: 17, weight: .regular))
-                                .foregroundStyle(appearance.accent.opacity(0.88))
-                                .frame(width: 26)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(feature.title)
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                if let detail = feature.detail {
-                                    Text(detail)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.white.opacity(0.44))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if let summary = item.summary {
+                        Text(summary)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .lineSpacing(4)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !item.features.isEmpty {
+                        VStack(spacing: 0) {
+                            ForEach(Array(item.features.enumerated()), id: \.element.id) { index, feature in
+                                HStack(spacing: 16) {
+                                    Image(systemName: feature.symbol)
+                                        .font(.system(size: 17, weight: .regular))
+                                        .foregroundStyle(appearance.accent.opacity(0.88))
+                                        .frame(width: 26)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(feature.title)
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.9))
+                                        if let detail = feature.detail {
+                                            Text(detail)
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.white.opacity(0.44))
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 16)
+                                .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+                                if index < item.features.count - 1 {
+                                    Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
                                 }
                             }
-                            Spacer()
                         }
-                        .padding(.horizontal, 16)
-                        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-
-                        if index < item.features.count - 1 {
-                            Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
-                        }
+                        .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
-                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(maxWidth: 900)
+                .padding(.horizontal, 42)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 34)
         .padding(.top, 27)
