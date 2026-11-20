@@ -332,6 +332,8 @@ private struct SettingsSectionPage: View {
     var body: some View {
         if section == .system {
             SystemMenuPage(openSystemItem: openSystemItem)
+        } else if section == .network {
+            NetworkSettingsPage()
         } else {
             settingsPlaceholder
         }
