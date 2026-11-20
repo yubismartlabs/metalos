@@ -119,6 +119,7 @@ final class WindowsStorefrontRuntime: ObservableObject {
     @Published private(set) var gogConnected = false
     @Published private(set) var gogReauthenticationRequired = false
     @Published private(set) var legendaryInstalled = false
+    @Published private(set) var legendaryUpdateReady = false
     @Published private(set) var gogdlInstalled = false
     @Published private(set) var isInstallingGame = false
     @Published private(set) var isInstallPaused = false
@@ -296,6 +297,85 @@ final class WindowsStorefrontRuntime: ObservableObject {
             legendaryInstalled = true
             status = "Legendary \(release.tagName) is installed. Connect Epic, then refresh the library."
         } catch { status = "Could not install Legendary: \(error.localizedDescription)" }
+    }
+
+    func downloadLegendaryUpdate(workspace: URL?) async {
+        guard !isWorking else { return }
+        guard let workspace else { status = "Choose a library folder first."; return }
+        let destination = legendaryCLI(workspace: workspace)
+        guard FileManager.default.isExecutableFile(atPath: destination.path) else { return }
+        isWorking = true
+        legendaryUpdateReady = false
+        defer { isWorking = false }
+        do {
+            status = "Checking for an Epic Games app update…"
+            let release = try await Self.fetchJSON(URL(string: "https://api.github.com/repos/legendary-gl/legendary/releases/latest")!, as: StorefrontRelease.self)
+            #if arch(arm64)
+            let architecture = "arm64"
+            #else
+            let architecture = "x64"
+            #endif
+            guard let asset = release.assets.first(where: { $0.name == "legendary_macOS_\(architecture)" }),
+                  asset.size > 100_000, asset.size < 100_000_000,
+                  let digest = asset.digest, digest.hasPrefix("sha256:") else {
+                throw StudioError.message("The Epic Games app update has no matching macOS download with a published SHA-256 checksum.")
+            }
+            status = "Downloading Epic Games app update \(release.tagName)…"
+            let (temporary, response) = try await URLSession.shared.download(from: asset.browserDownloadURL)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw StudioError.message("The Epic Games app update could not be downloaded.") }
+            let data = try Data(contentsOf: temporary, options: .mappedIfSafe)
+            let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard actual == String(digest.dropFirst("sha256:".count)).lowercased() else {
+                throw StudioError.message("The Epic Games app update did not match its published SHA-256 checksum.")
+            }
+            let installed = try Data(contentsOf: destination, options: .mappedIfSafe)
+            guard SHA256.hash(data: installed) != SHA256.hash(data: data) else {
+                status = "Epic Games is up to date (\(release.tagName))."
+                return
+            }
+            let staging = updateStagingURL(workspace: workspace)
+            try FileManager.default.createDirectory(at: staging.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: staging, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staging.path)
+            try release.tagName.write(to: staging.appendingPathExtension("version"), atomically: true, encoding: .utf8)
+            legendaryUpdateReady = true
+            status = "Epic Games app update \(release.tagName) is downloaded and ready to install."
+        } catch {
+            status = "Could not download Epic Games app update: \(error.localizedDescription)"
+        }
+    }
+
+    func installDownloadedLegendaryUpdate(workspace: URL?) async {
+        guard let workspace else { status = "Choose a library folder first."; return }
+        let staging = updateStagingURL(workspace: workspace)
+        guard legendaryUpdateReady, FileManager.default.isExecutableFile(atPath: staging.path) else {
+            status = "Download the Epic Games app update before installing it."
+            return
+        }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let destination = legendaryCLI(workspace: workspace)
+            let versionURL = staging.appendingPathExtension("version")
+            let version = (try? String(contentsOf: versionURL, encoding: .utf8)) ?? "latest"
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let replacement = destination.appendingPathExtension("replacement")
+            try FileManager.default.copyItem(at: staging, to: replacement)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: replacement.path)
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: replacement)
+            try? FileManager.default.removeItem(at: staging)
+            try? FileManager.default.removeItem(at: versionURL)
+            legendaryUpdateReady = false
+            legendaryInstalled = true
+            status = "Epic Games app was updated to \(version)."
+        } catch {
+            status = "Could not install Epic Games app update: \(error.localizedDescription)"
+        }
+        isWorking = false
+    }
+
+    private func updateStagingURL(workspace: URL) -> URL {
+        WindowsRuntimeLayout.root(in: workspace).appendingPathComponent("Updates/legendary", isDirectory: false)
     }
 
     func installGogdl(workspace: URL?, pythonPath: String) async {

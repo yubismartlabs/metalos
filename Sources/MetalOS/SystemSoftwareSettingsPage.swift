@@ -12,6 +12,7 @@ struct SystemSoftwareSettingsPage: View {
     @State private var pendingInstall: InstallTarget?
     @State private var showRequirementsConfirmation = false
     @State private var showUpdateConfirmation = false
+    @State private var showEpicUpdateConfirmation = false
     @State private var showResetConfirmation = false
     @State private var showResetComplete = false
     @State private var selection = 0
@@ -55,7 +56,13 @@ struct SystemSoftwareSettingsPage: View {
                             actionTitle: epicInstalled ? "Update" : "Install",
                             disabled: store.workspaceURL == nil || epicRuntime.isWorking,
                             index: 0
-                        ) { pendingInstall = .epic }
+                        ) {
+                            if epicRuntime.legendaryUpdateReady {
+                                showEpicUpdateConfirmation = true
+                            } else {
+                                pendingInstall = .epic
+                            }
+                        }
                         divider
                         appRow(
                             title: "Switch",
@@ -91,7 +98,7 @@ struct SystemSoftwareSettingsPage: View {
                                 Text("Automatically download updates")
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.92))
-                                Text("Downloads available Switch app updates when this page opens. MetalOS will always ask before installing an update.")
+                                Text("Downloads available Epic Games and Switch app updates when this page opens. MetalOS will always ask before installing an update.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.white.opacity(0.48))
                                     .fixedSize(horizontal: false, vertical: true)
@@ -190,6 +197,14 @@ struct SystemSoftwareSettingsPage: View {
         } message: {
             Text("The update has been downloaded. Installing updates the NXNative component used by the Switch app.")
         }
+        .confirmationDialog("Install Epic Games app update?", isPresented: $showEpicUpdateConfirmation, titleVisibility: .visible) {
+            Button("Install Update") {
+                Task { await epicRuntime.installDownloadedLegendaryUpdate(workspace: store.workspaceURL) }
+            }
+            Button("Later", role: .cancel) { }
+        } message: {
+            Text("The verified update has been downloaded. Installing updates the Legendary runtime used by the Epic Games app.")
+        }
         .alert("Reset MetalOS settings?", isPresented: $showResetConfirmation) {
             Button("Reset Settings", role: .destructive) { resetSettings() }
             Button("Cancel", role: .cancel) { }
@@ -204,7 +219,7 @@ struct SystemSoftwareSettingsPage: View {
         .onAppear { Task { await refreshOnOpen() } }
         .onChange(of: automaticDownloads) { _, enabled in
             guard enabled else { return }
-            Task { await checkNXNativeUpdates() }
+            Task { await downloadAvailableUpdates() }
         }
         .consoleInput(onCommand: navigate)
     }
@@ -335,7 +350,7 @@ struct SystemSoftwareSettingsPage: View {
         if let workspace = store.workspaceURL {
             await nxNative.refresh(workspace: workspace, pythonPath: store.data.settings.pythonPath, checkoutPath: store.data.settings.forkPath)
         }
-        if automaticDownloads { await checkNXNativeUpdates() }
+        if automaticDownloads { await downloadAvailableUpdates() }
     }
 
     private func refreshNXNative() async {
@@ -349,6 +364,12 @@ struct SystemSoftwareSettingsPage: View {
         }
         await nxNative.checkForUpdates(checkoutPath: checkout)
         if nxNative.updateAvailable { showUpdateConfirmation = true }
+    }
+
+    private func downloadAvailableUpdates() async {
+        await epicRuntime.downloadLegendaryUpdate(workspace: store.workspaceURL)
+        if epicRuntime.legendaryUpdateReady { showEpicUpdateConfirmation = true }
+        await checkNXNativeUpdates()
     }
 
     private func resetSettings() {
