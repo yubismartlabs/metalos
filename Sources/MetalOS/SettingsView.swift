@@ -9,6 +9,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case screenAndVideo = "Screen and Video"
     case notifications = "Notifications"
     case capturesAndBroadcasts = "Captures and Broadcasts"
+    case accessories = "Accessories"
     case usersGuide = "Users Guide"
 
     var id: Self { self }
@@ -23,6 +24,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .screenAndVideo: "display"
         case .notifications: "bell"
         case .capturesAndBroadcasts: "record.circle"
+        case .accessories: "gamecontroller"
         case .usersGuide: "book.closed"
         }
     }
@@ -33,6 +35,9 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .storage: "Check available console space, manage games, and choose an installation location."
         case .sound: "Adjust the volume of console sound effects."
         case .screenAndVideo: "Configure resolution and other video settings."
+        case .accessibility: "Enable screen zoom, screen reader, closed captions, custom button assignments, and menu navigation haptics."
+        case .capturesAndBroadcasts: "Set screenshot and video resolutions, and customize Create button shortcuts."
+        case .accessories: "Customize gamepads and test controller inputs."
         default: nil
         }
     }
@@ -56,6 +61,25 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             [SystemFeature(title: "Volume", detail: "Navigation sound effects", symbol: "speaker.wave.2")]
         case .screenAndVideo:
             [SystemFeature(title: "Resolution", detail: "Choose the display resolution", symbol: "display")]
+        case .accessibility:
+            [
+                SystemFeature(title: "Screen Zoom", detail: "Magnify the screen", symbol: "plus.magnifyingglass"),
+                SystemFeature(title: "Screen Reader", detail: "Read interface content aloud", symbol: "speaker.wave.3"),
+                SystemFeature(title: "Closed Captions", detail: "Display captions where supported", symbol: "captions.bubble"),
+                SystemFeature(title: "Custom Button Assignments", detail: "Change controller button assignments", symbol: "rectangle.on.rectangle"),
+                SystemFeature(title: "Menu Navigation Haptics", detail: "Enable haptic feedback in menus", symbol: "hand.tap")
+            ]
+        case .capturesAndBroadcasts:
+            [
+                SystemFeature(title: "Screenshot Resolution", detail: "Set captured image resolution", symbol: "camera"),
+                SystemFeature(title: "Video Resolution", detail: "Set captured video resolution", symbol: "video"),
+                SystemFeature(title: "Create Button Shortcuts", detail: "Customize the Create button", symbol: "button.programmable")
+            ]
+        case .accessories:
+            [
+                SystemFeature(title: "Customize Gamepads", detail: "Controller options, lighting, player assignment, and vibration", symbol: "slider.horizontal.3"),
+                SystemFeature(title: "Test Gamepad", detail: "Test buttons, sticks, triggers, and D-pad input", symbol: "gamecontroller")
+            ]
         default:
             []
         }
@@ -301,6 +325,9 @@ private struct SettingsSectionPage: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var appearance = StudioAppearance.shared
     @ObservedObject private var feedback = ConsoleFeedback.shared
+    @State private var showControllerSettings = false
+    @State private var showGamepadTester = false
+    @State private var selectedFeatureIndex = 0
 
     var body: some View {
         if section == .system {
@@ -344,35 +371,19 @@ private struct SettingsSectionPage: View {
             if !section.features.isEmpty {
                 VStack(spacing: 0) {
                     ForEach(Array(section.features.enumerated()), id: \.element.id) { index, feature in
-                        HStack(spacing: 16) {
-                            Image(systemName: feature.symbol)
-                                .font(.system(size: 17, weight: .regular))
-                                .foregroundStyle(appearance.accent.opacity(0.88))
-                                .frame(width: 26)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(feature.title)
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                if let detail = feature.detail {
-                                    Text(detail)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.white.opacity(0.44))
+                        Group {
+                            if section == .accessories {
+                                Button {
+                                    activateAccessory(index)
+                                } label: {
+                                    featureRow(feature)
                                 }
-                            }
-                            Spacer()
-                            if section == .sound {
-                                Text(feedback.volumeText)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.65))
-                                    .monospacedDigit()
-                                Slider(value: $feedback.volume, in: 0...1)
-                                    .tint(appearance.accent)
-                                    .frame(width: 220)
-                                    .accessibilityLabel("Volume")
+                                .buttonStyle(ConsoleButtonStyle())
+                                .consoleFocus(selectedFeatureIndex == index, cornerRadius: 10, scale: 1.015)
+                            } else {
+                                featureRow(feature)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
 
                         if index < section.features.count - 1 {
                             Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
@@ -387,6 +398,63 @@ private struct SettingsSectionPage: View {
         .padding(.top, 27)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(appearance.background.ignoresSafeArea())
+        .consoleSheet(isPresented: $showControllerSettings) { ControllerStatusView() }
+        .consoleSheet(isPresented: $showGamepadTester) { GamepadTesterView() }
+        .consoleInput(onCommand: navigate)
+    }
+
+    private func activateAccessory(_ index: Int) {
+        selectedFeatureIndex = index
+        if index == 0 { showControllerSettings = true }
+        else { showGamepadTester = true }
+    }
+
+    private func navigate(_ command: String) {
+        if command == "back" { dismiss(); return }
+        guard section == .accessories else { return }
+        switch command {
+        case "up": selectedFeatureIndex = (selectedFeatureIndex - 1 + section.features.count) % section.features.count
+        case "down": selectedFeatureIndex = (selectedFeatureIndex + 1) % section.features.count
+        case "confirm": activateAccessory(selectedFeatureIndex)
+        default: break
+        }
+    }
+
+    @ViewBuilder private func featureRow(_ feature: SystemFeature) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: feature.symbol)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(appearance.accent.opacity(0.88))
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(feature.title)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+                if let detail = feature.detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+            }
+            Spacer()
+            if section == .sound {
+                Text(feedback.volumeText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.65))
+                    .monospacedDigit()
+                Slider(value: $feedback.volume, in: 0...1)
+                    .tint(appearance.accent)
+                    .frame(width: 220)
+                    .accessibilityLabel("Volume")
+            }
+            if section == .accessories {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
     }
 }
 
