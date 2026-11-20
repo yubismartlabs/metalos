@@ -26,6 +26,114 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .usersGuide: "book.closed"
         }
     }
+
+    var summary: String? {
+        switch self {
+        case .network: "Connect to Wi-Fi or wired LAN, test internet speeds, and view connection status."
+        case .storage: "Check available console space, manage games, and choose an installation location."
+        case .sound: "Adjust the volume of console sound effects."
+        case .screenAndVideo: "Configure resolution and other video settings."
+        default: nil
+        }
+    }
+
+    var features: [SystemFeature] {
+        switch self {
+        case .network:
+            [
+                SystemFeature(title: "Wi-Fi", detail: "Connect to a wireless network", symbol: "wifi"),
+                SystemFeature(title: "Wired LAN", detail: "Connect through Ethernet", symbol: "cable.connector"),
+                SystemFeature(title: "Internet Speed Test", detail: "Test your current connection speed", symbol: "speedometer"),
+                SystemFeature(title: "Connection Status", detail: "View current network connection details", symbol: "network")
+            ]
+        case .storage:
+            [
+                SystemFeature(title: "Available Space", detail: "Check available space on your console", symbol: "internaldrive"),
+                SystemFeature(title: "Move or Delete Games", detail: "Manage games in your library", symbol: "square.and.arrow.up.on.square"),
+                SystemFeature(title: "Default Installation Location", detail: "Choose where new games are installed", symbol: "folder")
+            ]
+        case .sound:
+            [SystemFeature(title: "Volume", detail: "Navigation sound effects", symbol: "speaker.wave.2")]
+        case .screenAndVideo:
+            [SystemFeature(title: "Resolution", detail: "Choose the display resolution", symbol: "display")]
+        default:
+            []
+        }
+    }
+}
+
+private enum SystemMenuItem: String, CaseIterable, Identifiable, Hashable {
+    case systemSoftware = "System Software"
+    case language = "Language"
+    case dateAndTime = "Date and Time"
+    case powerSaving = "Power Saving"
+    case webBrowser = "Web Browser"
+
+    var id: Self { self }
+
+    var symbol: String {
+        switch self {
+        case .systemSoftware: "arrow.down.circle"
+        case .language: "character.bubble"
+        case .dateAndTime: "calendar"
+        case .powerSaving: "battery.100"
+        case .webBrowser: "safari"
+        }
+    }
+
+    var summary: String? {
+        switch self {
+        case .systemSoftware: "Check for and install system updates, manage automatic downloads, view App Information, or reset to factory defaults."
+        case .language: "Change the Console Language and configure Input Languages for keyboards."
+        case .dateAndTime: "Set the time zone, daylight saving, date and time formats, and internet clock sync."
+        case .powerSaving: nil
+        case .webBrowser: "Delete cookies and clear website data used by the built-in browser engine."
+        }
+    }
+
+    var features: [SystemFeature] {
+        switch self {
+        case .systemSoftware:
+            [
+                SystemFeature(title: "Check for and install system updates", symbol: "arrow.clockwise"),
+                SystemFeature(title: "Automatic update downloads", symbol: "arrow.down.to.line"),
+                SystemFeature(title: "App Information", symbol: "info.circle"),
+                SystemFeature(title: "Reset everything to factory defaults", symbol: "arrow.counterclockwise")
+            ]
+        case .language:
+            [
+                SystemFeature(title: "Console Language", symbol: "character.bubble"),
+                SystemFeature(title: "Input Languages", detail: "On-screen keyboard and external keyboards", symbol: "keyboard")
+            ]
+        case .dateAndTime:
+            [
+                SystemFeature(title: "Time Zone", symbol: "globe"),
+                SystemFeature(title: "Daylight Saving", symbol: "sun.max"),
+                SystemFeature(title: "Date Format", symbol: "calendar"),
+                SystemFeature(title: "Time Format", symbol: "clock"),
+                SystemFeature(title: "Sync Clock via Internet", symbol: "arrow.triangle.2.circlepath")
+            ]
+        case .webBrowser:
+            [
+                SystemFeature(title: "Delete Cookies", symbol: "trash"),
+                SystemFeature(title: "Clear Website Data", detail: "Data used by the console’s built-in browser engine", symbol: "globe")
+            ]
+        case .powerSaving:
+            []
+        }
+    }
+}
+
+private enum SettingsRoute: Hashable {
+    case section(SettingsSection)
+    case systemItem(SystemMenuItem)
+}
+
+private struct SystemFeature: Identifiable {
+    let title: String
+    var detail: String? = nil
+    let symbol: String
+    var id: String { title }
 }
 
 struct SettingsView: View {
@@ -36,7 +144,7 @@ struct SettingsView: View {
     var isPage = false
     var onClose: (() -> Void)? = nil
 
-    @State private var path: [SettingsSection] = []
+    @State private var path: [SettingsRoute] = []
     @State private var selectedIndex = 0
 
     private var accent: Color { appearance.accent }
@@ -120,8 +228,15 @@ struct SettingsView: View {
                         }
                     }
                 }
-                .navigationDestination(for: SettingsSection.self) { section in
-                    SettingsSectionPage(section: section)
+                .navigationDestination(for: SettingsRoute.self) { route in
+                    switch route {
+                    case .section(let section):
+                        SettingsSectionPage(section: section) { item in
+                            path.append(.systemItem(item))
+                        }
+                    case .systemItem(let item):
+                        SystemMenuDetailPage(item: item)
+                    }
                 }
             }
             .background(Color.clear)
@@ -158,7 +273,7 @@ struct SettingsView: View {
     }
 
     private func open(_ section: SettingsSection) {
-        path.append(section)
+        path.append(.section(section))
     }
 
     private func navigate(_ command: String) {
@@ -182,10 +297,20 @@ struct SettingsView: View {
 
 private struct SettingsSectionPage: View {
     let section: SettingsSection
+    var openSystemItem: (SystemMenuItem) -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var appearance = StudioAppearance.shared
+    @ObservedObject private var feedback = ConsoleFeedback.shared
 
     var body: some View {
+        if section == .system {
+            SystemMenuPage(openSystemItem: openSystemItem)
+        } else {
+            settingsPlaceholder
+        }
+    }
+
+    private var settingsPlaceholder: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 14) {
                 Button { dismiss() } label: {
@@ -207,7 +332,228 @@ private struct SettingsSectionPage: View {
             }
             .padding(.bottom, 24)
 
+            if let summary = section.summary {
+                Text(summary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 20)
+            }
+
+            if !section.features.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(section.features.enumerated()), id: \.element.id) { index, feature in
+                        HStack(spacing: 16) {
+                            Image(systemName: feature.symbol)
+                                .font(.system(size: 17, weight: .regular))
+                                .foregroundStyle(appearance.accent.opacity(0.88))
+                                .frame(width: 26)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(feature.title)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                if let detail = feature.detail {
+                                    Text(detail)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.white.opacity(0.44))
+                                }
+                            }
+                            Spacer()
+                            if section == .sound {
+                                Text(feedback.volumeText)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.65))
+                                    .monospacedDigit()
+                                Slider(value: $feedback.volume, in: 0...1)
+                                    .tint(appearance.accent)
+                                    .frame(width: 220)
+                                    .accessibilityLabel("Volume")
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
+
+                        if index < section.features.count - 1 {
+                            Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
+                        }
+                    }
+                }
+                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
             Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 34)
+        .padding(.top, 27)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(appearance.background.ignoresSafeArea())
+    }
+}
+
+private struct SystemMenuPage: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var appearance = StudioAppearance.shared
+    @State private var selectedIndex = 0
+    var openSystemItem: (SystemMenuItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 34, height: 34)
+                        .background(.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(ConsoleButtonStyle())
+                .accessibilityLabel("Back to settings")
+
+                Image(systemName: SettingsSection.system.symbol)
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(appearance.accent)
+                Text(SettingsSection.system.rawValue)
+                    .font(.system(size: 28, weight: .light))
+                    .tracking(-0.4)
+                Spacer()
+            }
+            .padding(.bottom, 24)
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(SystemMenuItem.allCases.enumerated()), id: \.element.id) { index, item in
+                        Button {
+                            selectedIndex = index
+                            openSystemItem(item)
+                        } label: {
+                            HStack(spacing: 17) {
+                                Image(systemName: item.symbol)
+                                    .font(.system(size: 19, weight: .regular))
+                                    .foregroundStyle(appearance.accent.opacity(0.88))
+                                    .frame(width: 28)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.rawValue)
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(.white.opacity(0.92))
+                                    if let summary = item.summary {
+                                        Text(summary)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.white.opacity(0.44))
+                                            .lineLimit(2)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.35))
+                            }
+                            .padding(.horizontal, 18)
+                            .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+                            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .buttonStyle(ConsoleButtonStyle())
+                        .consoleFocus(selectedIndex == index, cornerRadius: 12, scale: 1.015)
+                        .accessibilityAddTraits(selectedIndex == index ? [.isSelected] : [])
+                        .id(index)
+
+                        if index < SystemMenuItem.allCases.count - 1 {
+                            Rectangle()
+                                .fill(.white.opacity(0.075))
+                                .frame(height: 1)
+                                .padding(.leading, 63)
+                        }
+                    }
+                }
+                .frame(maxWidth: 900)
+                .padding(.horizontal, 42)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.horizontal, 34)
+        .padding(.top, 27)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(appearance.background.ignoresSafeArea())
+        .consoleInput(onCommand: navigate)
+    }
+
+    private func navigate(_ command: String) {
+        switch command {
+        case "up": selectedIndex = (selectedIndex - 1 + SystemMenuItem.allCases.count) % SystemMenuItem.allCases.count
+        case "down": selectedIndex = (selectedIndex + 1) % SystemMenuItem.allCases.count
+        case "confirm":
+            openSystemItem(SystemMenuItem.allCases[selectedIndex])
+        case "back": dismiss()
+        default: break
+        }
+    }
+}
+
+private struct SystemMenuDetailPage: View {
+    let item: SystemMenuItem
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var appearance = StudioAppearance.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 34, height: 34)
+                        .background(.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(ConsoleButtonStyle())
+                .accessibilityLabel("Back to System settings")
+
+                Image(systemName: item.symbol)
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(appearance.accent)
+                Text(item.rawValue)
+                    .font(.system(size: 28, weight: .light))
+                    .tracking(-0.4)
+                Spacer()
+            }
+
+            if let summary = item.summary {
+                Text(summary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 22)
+                    .padding(.bottom, 20)
+            }
+
+            if !item.features.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(item.features.enumerated()), id: \.element.id) { index, feature in
+                        HStack(spacing: 16) {
+                            Image(systemName: feature.symbol)
+                                .font(.system(size: 17, weight: .regular))
+                                .foregroundStyle(appearance.accent.opacity(0.88))
+                                .frame(width: 26)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(feature.title)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                if let detail = feature.detail {
+                                    Text(detail)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.white.opacity(0.44))
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+
+                        if index < item.features.count - 1 {
+                            Rectangle().fill(.white.opacity(0.07)).frame(height: 1).padding(.leading, 58)
+                        }
+                    }
+                }
+                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 34)
