@@ -23,7 +23,7 @@ struct GamepadSnapshot {
     }
 }
 struct GamepadTesterView: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.consolePageClose) private var closePage
     @ObservedObject private var controller = ControllerManager.shared
     var initialDeviceID: String? = nil
     var lightingGuide = false
@@ -45,7 +45,7 @@ struct GamepadTesterView: View {
                     Text(lightingGuide ? "GameSir T3 Lite" : "Controller Input").font(.system(size: 30, weight: .light))
                 }
                 Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark").padding(10).background(.white.opacity(0.07), in: Circle()) }
+                Button { closePage() } label: { Image(systemName: "xmark").padding(10).background(.white.opacity(0.07), in: Circle()) }
                     .buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Close tester").keyboardShortcut(.cancelAction)
             }
             if device == nil {
@@ -123,7 +123,7 @@ struct GamepadTesterView: View {
             .consoleInput { command in
                 // Raw gamepad input is captured by ControllerManager while testing.
                 // Keyboard Escape can still close the sheet.
-                if command == "back" { dismiss() }
+                if command == "back" { closePage() }
                 else if !testing {
                     if command == "confirm" { startTesting() }
                     else if ["previous", "next", "left", "right"].contains(command) { changeDevice(command == "previous" || command == "left" ? -1 : 1) }

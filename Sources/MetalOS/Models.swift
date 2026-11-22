@@ -1,12 +1,13 @@
 import Foundation
 
 enum GameSource: String, Codable, CaseIterable, Identifiable, Sendable {
-    case all = "All Games", nxnative = "NXNative", steam = "Steam", epic = "Epic", gog = "GOG", battleNet = "Battle.net", windows = "Windows", crossover = "CrossOver", heroic = "Heroic", appStore = "App Store", native = "Native"
+    case all = "All Games", nxnative = "NXNative", ps2 = "PlayStation 2", steam = "Steam", epic = "Epic", gog = "GOG", battleNet = "Battle.net", windows = "Windows", crossover = "CrossOver", heroic = "Heroic", appStore = "App Store", native = "Native"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .all: "square.grid.2x2.fill"
         case .nxnative: "cpu.fill"
+        case .ps2: "gamecontroller.fill"
         case .steam: "gearshape.2.fill"
         case .epic: "e.square.fill"
         case .gog: "g.square.fill"
@@ -28,17 +29,17 @@ enum WindowsGraphicsBackend: String, Codable, CaseIterable, Identifiable, Sendab
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .automatic: "Automatic · Mullion / DXMT"
-        case .vkd3d: "VKD3D-Proton + DXVK · Vulkan"
-        case .dxvk: "DXVK · D3D8–11"
+        case .automatic: "Automatic · DXMT / D3DMetal"
+        case .vkd3d: "DirectX 12 · VKD3D-Proton"
+        case .dxvk: "DirectX 8–11 · DXVK"
         case .wine: "WineD3D · OpenGL fallback"
         }
     }
     var detail: String {
         switch self {
-        case .automatic: "Uses MetalSharp Wine’s default Direct3D-to-Metal route."
-        case .vkd3d: "Uses VKD3D-Proton for Direct3D 12 and DXVK for older Direct3D versions."
-        case .dxvk: "Uses DXVK through MoltenVK for Direct3D 8–11."
+        case .automatic: "Uses the runtime’s automatic Direct3D-to-Metal translation."
+        case .vkd3d: "Uses VKD3D-Proton for DirectX 12 and DXVK for older Direct3D versions."
+        case .dxvk: "Uses DXVK through MoltenVK for DirectX 8, 9, 10, and 11."
         case .wine: "Uses Wine’s OpenGL renderer as a compatibility fallback."
         }
     }
@@ -78,6 +79,9 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var installPath: String
     var artworkPath: String? = nil
     var lastPlayed: Date? = nil
+    var playedSeconds: TimeInterval? = nil
+    var guideProfile: ConsoleGuideProfile? = nil
+    var metalHUDEnabled: Bool? = nil
     var favorite: Bool = false
     var buildInput: String? = nil
     var forkPath: String? = nil
@@ -101,6 +105,7 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var windowsGraphicsBackend: WindowsGraphicsBackend? = nil
     var windowsGraphicsBackendUserSet: Bool? = nil
     var windowsCompatibilityRuntime: WindowsCompatibilityRuntime? = nil
+    var lutrisWineProfile: LutrisWineProfile? = nil
     var isGame: Bool { isGameApp ?? (source != .native || id.hasPrefix("app:") || id.hasPrefix("manual:")) }
     var isAvailable: Bool { FileManager.default.fileExists(atPath: installPath) }
 }
@@ -119,6 +124,9 @@ struct LauncherSettings: Codable, Equatable, Sendable {
     var startInConsole = false
     var startGamesFullScreen: Bool? = nil
     var automaticallyFetchArtwork: Bool? = nil
+    var homeWallpaperPath: String? = nil
+    var homeParticlesEnabled: Bool? = nil
+    var defaultWindowsRuntime: WindowsCompatibilityRuntime? = nil
 }
 struct LibraryData: Codable {
     var games: [Game] = []

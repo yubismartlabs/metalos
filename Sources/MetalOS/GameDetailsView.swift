@@ -20,7 +20,7 @@ enum GameDetailAction: String, CaseIterable, Identifiable {
         case .favorite: game.favorite ? "Unfavorite" : "Favorite"
         case .artwork: "Refresh game details"
         case .build: "Build studio"
-        case .bottleTools: "Game bottle"
+        case .bottleTools: game.windowsExecutablePath == nil && game.lutrisWineProfile != nil ? "Install game / patches" : "Game bottle"
         case .reveal: "Files"
         }
     }
@@ -34,10 +34,14 @@ struct GameDetailsView: View {
     let onAction: (GameDetailAction) -> Void
     @State private var showBottleTools = false
     private var game: Game? { store.data.games.first { $0.id == gameID } }
+    private func supportsWindowsRuntime(_ game: Game) -> Bool {
+        game.windowsExecutablePath != nil || game.windowsBottlePath != nil || game.windowsStoreProvider != nil
+            || URL(string: game.launchURL)?.scheme == "metalos-windows"
+    }
     static func actions(for game: Game) -> [GameDetailAction] {
         GameDetailAction.allCases.filter {
             ($0 != .build || game.source == .nxnative)
-                && ($0 != .bottleTools || game.windowsExecutablePath != nil || (game.windowsStoreProvider != nil && game.isAvailable))
+                && ($0 != .bottleTools || game.windowsExecutablePath != nil || game.windowsBottlePath != nil || (game.windowsStoreProvider != nil && game.isAvailable))
         }
     }
     var body: some View {
@@ -60,10 +64,11 @@ struct GameDetailsView: View {
                         Text(game.title).font(.system(size: 37, weight: .light)).tracking(-1).lineLimit(2)
                         HStack(spacing: 10) {
                             Button { onAction(.play) } label: {
-                                Label("Play game", systemImage: "play.fill")
+                                Label(game.windowsBottlePath != nil && game.windowsExecutablePath == nil ? "Choose game executable" : "Play game",
+                                      systemImage: game.windowsBottlePath != nil && game.windowsExecutablePath == nil ? "folder.badge.plus" : "play.fill")
                                     .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                                     .padding(.horizontal, 20).frame(height: 40).background(studioAccent, in: RoundedRectangle(cornerRadius: 8))
-                            }.buttonStyle(ConsoleButtonStyle()).disabled(!game.isAvailable)
+                            }.buttonStyle(ConsoleButtonStyle()).disabled(!game.isAvailable && game.windowsBottlePath == nil)
                             Button { onAction(.favorite) } label: {
                                 Image(systemName: game.favorite ? "heart.fill" : "heart")
                                     .font(.system(size: 15, weight: .medium)).foregroundStyle(game.favorite ? studioAccent : .white)
@@ -98,30 +103,40 @@ struct GameDetailsView: View {
                                     detail("LAST PLAYED", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not played yet")
                                 }
                                 detail("LOCATION", game.installPath)
-                                if game.windowsStoreProvider != nil {
+                                if supportsWindowsRuntime(game) {
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text("WINDOWS RUNTIME").font(.system(size: 8, weight: .semibold)).tracking(1.8).foregroundStyle(.white.opacity(0.35))
                                         Picker("Windows runtime", selection: Binding(
-                                            get: { game.windowsCompatibilityRuntime ?? .managedWine },
+                                            get: { game.windowsCompatibilityRuntime },
                                             set: { store.setWindowsCompatibilityRuntime($0, for: game.id) }
                                         )) {
+                                            Text("Use PC Default").tag(nil as WindowsCompatibilityRuntime?)
                                             ForEach(WindowsCompatibilityRuntime.allCases) { runtime in
-                                                Text(runtime.title).tag(runtime)
+                                                Text(runtime.title).tag(Optional(runtime))
                                             }
                                         }.labelsHidden().pickerStyle(.menu).frame(maxWidth: 370, alignment: .leading)
-                                        Text((game.windowsCompatibilityRuntime ?? .managedWine).detail)
+                                        Text(store.effectiveWindowsRuntime(for: game).detail)
                                             .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46)).fixedSize(horizontal: false, vertical: true)
-                                        if game.windowsCompatibilityRuntime != .gamePortingToolkit {
-                                            Text("DIRECTX GRAPHICS").font(.system(size: 8, weight: .semibold)).tracking(1.8).foregroundStyle(.white.opacity(0.35)).padding(.top, 6)
+                                    }
+                                    .accessibilityElement(children: .contain)
+                                }
+                                if supportsWindowsRuntime(game) {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("DIRECTX BACKEND").font(.system(size: 8, weight: .semibold)).tracking(1.8).foregroundStyle(.white.opacity(0.35))
+                                        if store.effectiveWindowsRuntime(for: game) == .gamePortingToolkit {
+                                            Text("Game Porting Toolkit uses Apple D3DMetal for DirectX 11/12. Choose Managed Wine above to select another backend.")
+                                                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46)).fixedSize(horizontal: false, vertical: true)
+                                        } else {
+                                        let suggestedBackend = game.lutrisWineProfile?.preferredGraphicsBackend ?? .automatic
                                         Picker("Graphics backend", selection: Binding(
-                                            get: { game.windowsGraphicsBackendUserSet == true ? (game.windowsGraphicsBackend ?? .automatic) : .automatic },
+                                            get: { game.windowsGraphicsBackendUserSet == true ? (game.windowsGraphicsBackend ?? .automatic) : suggestedBackend },
                                             set: { store.setWindowsGraphicsBackend($0, for: game.id) }
                                         )) {
                                             ForEach(WindowsGraphicsBackend.allCases) { backend in
                                                 Text(backend.title).tag(backend)
                                             }
                                         }.labelsHidden().pickerStyle(.menu).frame(maxWidth: 370, alignment: .leading)
-                                        Text((game.windowsGraphicsBackendUserSet == true ? (game.windowsGraphicsBackend ?? .automatic) : .automatic).detail)
+                                        Text((game.windowsGraphicsBackendUserSet == true ? (game.windowsGraphicsBackend ?? .automatic) : suggestedBackend).detail)
                                             .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46)).fixedSize(horizontal: false, vertical: true)
                                         }
                                     }
@@ -192,7 +207,7 @@ struct GameDetailsView: View {
                 Button("Back", action: onClose).padding()
             }
         }.animation(ConsoleFeedback.shared.focusAnimation, value: selectedAction).consoleMotion().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(studioBackground).preferredColorScheme(.dark).tint(studioAccent)
-            .consoleSheet(isPresented: $showBottleTools) {
+            .consolePage(isPresented: $showBottleTools) {
                 if let game, let workspace = store.workspaceURL {
                     WindowsBottleToolsView(game: game, workspace: workspace, onClose: { showBottleTools = false })
                 } else {

@@ -9,19 +9,13 @@ struct SystemSoftwareSettingsPage: View {
     @StateObject private var nxNative = NXNativeInstaller()
     @StateObject private var epicRuntime = WindowsStorefrontRuntime()
     @AppStorage("system.automaticUpdateDownloads") private var automaticDownloads = false
-    @State private var pendingInstall: InstallTarget?
     @State private var showRequirementsConfirmation = false
     @State private var showUpdateConfirmation = false
     @State private var showEpicUpdateConfirmation = false
+    @State private var showGOGUpdateConfirmation = false
     @State private var showResetConfirmation = false
     @State private var showResetComplete = false
     @State private var selection = 0
-
-    private enum InstallTarget: String, Identifiable {
-        case epic = "Epic Games"
-        case switchApp = "Switch"
-        var id: String { rawValue }
-    }
 
     private var accent: Color { appearance.accent }
     private var epicInstalled: Bool {
@@ -34,6 +28,10 @@ struct SystemSoftwareSettingsPage: View {
         if NXBuildEnvironment.isCheckout(checkout) { return true }
         return NXBuildEnvironment.isCheckout(workspace.appendingPathComponent(".nxstudio/Engines/NXNative-Yubismartlabs").path)
     }
+    private var gogInstalled: Bool {
+        guard let workspace = store.workspaceURL else { return false }
+        return FileManager.default.isExecutableFile(atPath: epicRuntime.gogdlCLI(workspace: workspace).path)
+    }
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Development"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
@@ -45,41 +43,47 @@ struct SystemSoftwareSettingsPage: View {
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    group(title: "CONSOLE APPS", symbol: "square.grid.2x2") {
+                    group(title: "PLATFORM UPDATES", symbol: "square.grid.2x2") {
                         appRow(
                             title: "Epic Games",
-                            detail: "Install the Epic Games library and account support.",
-                            engineNote: "Includes Legendary and its required runtime files.",
+                            detail: "Epic Games platform app",
+                            engineNote: "Managed runtime: Legendary",
                             symbol: "e.square",
                             installed: epicInstalled,
                             progress: epicRuntime.isWorking ? epicRuntime.status : nil,
-                            actionTitle: epicInstalled ? "Update" : "Install",
-                            disabled: store.workspaceURL == nil || epicRuntime.isWorking,
+                            actionTitle: epicInstalled ? "Check for Updates" : "Install in Store",
+                            disabled: !epicInstalled || epicRuntime.isWorking,
                             index: 0
                         ) {
-                            if epicRuntime.legendaryUpdateReady {
-                                showEpicUpdateConfirmation = true
-                            } else {
-                                pendingInstall = .epic
-                            }
+                            Task { await checkEpicUpdates() }
+                        }
+                        divider
+                        appRow(
+                            title: "GOG",
+                            detail: "GOG platform app",
+                            engineNote: "Managed runtime: gogdl and its isolated Python environment",
+                            symbol: "g.square",
+                            installed: gogInstalled,
+                            progress: epicRuntime.isWorking && gogInstalled ? epicRuntime.status : nil,
+                            actionTitle: gogInstalled ? "Update" : "Install in Store",
+                            disabled: !gogInstalled || epicRuntime.isWorking,
+                            index: 1
+                        ) {
+                            showGOGUpdateConfirmation = true
                         }
                         divider
                         appRow(
                             title: "Switch",
-                            detail: "Install tools to build and play supported Switch games on this Mac.",
-                            engineNote: "Includes NXNative, Python build support, and required build tools when available.",
+                            detail: "Switch platform app",
+                            engineNote: "Managed runtime: NXNative and available build requirements",
                             symbol: "gamecontroller",
                             installed: switchInstalled,
                             progress: nxNative.isWorking ? nxNative.status : nil,
-                            actionTitle: switchInstalled ? "Update" : "Install",
-                            disabled: store.workspaceURL == nil || nxNative.isWorking,
-                            index: 1
+                            actionTitle: switchInstalled ? "Check for Updates" : "Install in Store",
+                            disabled: !switchInstalled || nxNative.isWorking,
+                            index: 2
                         ) {
-                            if switchInstalled {
-                                Task { await checkNXNativeUpdates() }
-                            } else {
-                                pendingInstall = .switchApp
-                            }
+                            Task { await checkNXNativeUpdates() }
                         }
                         Text(nxNative.updateStatus)
                             .font(.system(size: 11))
@@ -98,7 +102,7 @@ struct SystemSoftwareSettingsPage: View {
                                 Text("Automatically download updates")
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.92))
-                                Text("Downloads available Epic Games and Switch app updates when this page opens. MetalOS will always ask before installing an update.")
+                                Text("Downloads available Epic Games and Switch updates when this page opens. GOG updates are started manually. Installation always requires your confirmation.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.white.opacity(0.48))
                                     .fixedSize(horizontal: false, vertical: true)
@@ -151,7 +155,7 @@ struct SystemSoftwareSettingsPage: View {
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 9)
                                 .background(.white.opacity(0.07), in: Capsule())
-                                .consoleFocus(selection == 2, cornerRadius: 18)
+                                .consoleFocus(selection == 3, cornerRadius: 18)
                         }
                         .padding(18)
                     }
@@ -166,55 +170,49 @@ struct SystemSoftwareSettingsPage: View {
         .padding(.top, 27)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(appearance.background.ignoresSafeArea())
-        .confirmationDialog("Install \(pendingInstall?.rawValue ?? "app")?", isPresented: Binding(
-            get: { pendingInstall != nil }, set: { if !$0 { pendingInstall = nil } }
-        ), titleVisibility: .visible) {
-            Button("Install \(pendingInstall?.rawValue ?? "App")") { confirmInstall() }
-            Button("Cancel", role: .cancel) { pendingInstall = nil }
-        } message: {
-            Text(installDescription(for: pendingInstall))
-        }
-        .confirmationDialog("Install required components?", isPresented: $showRequirementsConfirmation, titleVisibility: .visible) {
-            Button("Install Components") {
+        .consolePage(isPresented: $showRequirementsConfirmation) {
+            ActionConfirmationView(title: "Install required components?",
+                                   message: "MetalOS will install the available build tools and Python packages required by the Switch app. Some Apple tools may still need to be installed manually.",
+                                   confirmTitle: "Install components") {
                 Task {
                     await nxNative.installConfirmedRequirements()
+                    persistNXNativeRuntime()
                     await refreshNXNative()
                 }
             }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("MetalOS will install the available build tools and Python packages required by the Switch app. Some Apple tools may still need to be installed manually.")
         }
-        .confirmationDialog("Install Switch app update?", isPresented: $showUpdateConfirmation, titleVisibility: .visible) {
-            Button("Install Update") {
+        .consolePage(isPresented: $showUpdateConfirmation) {
+            ActionConfirmationView(title: "Install Switch app update?",
+                                   message: "The update has been downloaded. Installing updates the NXNative component used by the Switch app.",
+                                   confirmTitle: "Install update") {
                 guard let checkout = nxCheckoutPath else { return }
                 Task {
                     await nxNative.installUpdate(checkoutPath: checkout)
                     await refreshNXNative()
                 }
             }
-            Button("Later", role: .cancel) { }
-        } message: {
-            Text("The update has been downloaded. Installing updates the NXNative component used by the Switch app.")
         }
-        .confirmationDialog("Install Epic Games app update?", isPresented: $showEpicUpdateConfirmation, titleVisibility: .visible) {
-            Button("Install Update") {
+        .consolePage(isPresented: $showEpicUpdateConfirmation) {
+            ActionConfirmationView(title: "Install Epic Games app update?",
+                                   message: "The verified update has been downloaded. Installing updates the Legendary runtime used by the Epic Games app.",
+                                   confirmTitle: "Install update") {
                 Task { await epicRuntime.installDownloadedLegendaryUpdate(workspace: store.workspaceURL) }
             }
-            Button("Later", role: .cancel) { }
-        } message: {
-            Text("The verified update has been downloaded. Installing updates the Legendary runtime used by the Epic Games app.")
         }
-        .alert("Reset MetalOS settings?", isPresented: $showResetConfirmation) {
-            Button("Reset Settings", role: .destructive) { resetSettings() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("MetalOS preferences and library configuration will return to their defaults. Your games, game files, and installed runtimes will remain in place.")
+        .consolePage(isPresented: $showGOGUpdateConfirmation) {
+            ActionConfirmationView(title: "Update GOG app?",
+                                   message: "MetalOS will update gogdl and its isolated Python requirements for the GOG app.",
+                                   confirmTitle: "Update GOG") {
+                Task { await epicRuntime.installGogdl(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath) }
+            }
         }
-        .alert("Settings reset", isPresented: $showResetComplete) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("MetalOS preferences have been restored to their defaults.")
+        .consolePage(isPresented: $showResetConfirmation) {
+            ActionConfirmationView(title: "Reset MetalOS settings?",
+                                   message: "MetalOS preferences and library configuration will return to their defaults. Your games, game files, and installed runtimes will remain in place.",
+                                   confirmTitle: "Reset settings", destructive: true, onConfirm: resetSettings)
+        }
+        .consolePage(isPresented: $showResetComplete) {
+            FullPageMessage(title: "Settings reset", message: "MetalOS preferences have been restored to their defaults.", symbol: "checkmark.circle.fill", buttonTitle: "Done")
         }
         .onAppear { Task { await refreshOnOpen() } }
         .onChange(of: automaticDownloads) { _, enabled in
@@ -320,32 +318,6 @@ struct SystemSoftwareSettingsPage: View {
         return NXBuildEnvironment.isCheckout(managed) ? managed : nil
     }
 
-    private func installDescription(for target: InstallTarget?) -> String {
-        switch target {
-        case .epic:
-            "MetalOS will install the Epic Games app support, including the Legendary runtime and its verified macOS executable."
-        case .switchApp:
-            "MetalOS will install the Switch app support, including NXNative and any available Python or build tool requirements. You can review the components before they are installed."
-        case nil: ""
-        }
-    }
-
-    private func confirmInstall() {
-        let target = pendingInstall
-        pendingInstall = nil
-        switch target {
-        case .epic:
-            Task { await epicRuntime.installLegendary(workspace: store.workspaceURL) }
-        case .switchApp:
-            Task {
-                await nxNative.install(workspace: store.workspaceURL, pythonPath: store.data.settings.pythonPath)
-                if nxNative.confirmRequirements { showRequirementsConfirmation = true }
-                await refreshNXNative()
-            }
-        case nil: break
-        }
-    }
-
     private func refreshOnOpen() async {
         if let workspace = store.workspaceURL {
             await nxNative.refresh(workspace: workspace, pythonPath: store.data.settings.pythonPath, checkoutPath: store.data.settings.forkPath)
@@ -358,6 +330,12 @@ struct SystemSoftwareSettingsPage: View {
         await nxNative.refresh(workspace: workspace, pythonPath: store.data.settings.pythonPath, checkoutPath: store.data.settings.forkPath)
     }
 
+    private func persistNXNativeRuntime() {
+        if let checkout = nxNative.installedCheckout { store.data.settings.forkPath = checkout }
+        if let python = nxNative.installedPython { store.data.settings.pythonPath = python }
+        store.save()
+    }
+
     private func checkNXNativeUpdates() async {
         guard let checkout = nxCheckoutPath else {
             return
@@ -366,9 +344,13 @@ struct SystemSoftwareSettingsPage: View {
         if nxNative.updateAvailable { showUpdateConfirmation = true }
     }
 
-    private func downloadAvailableUpdates() async {
+    private func checkEpicUpdates() async {
         await epicRuntime.downloadLegendaryUpdate(workspace: store.workspaceURL)
         if epicRuntime.legendaryUpdateReady { showEpicUpdateConfirmation = true }
+    }
+
+    private func downloadAvailableUpdates() async {
+        await checkEpicUpdates()
         await checkNXNativeUpdates()
     }
 
@@ -383,16 +365,19 @@ struct SystemSoftwareSettingsPage: View {
         feedback.soundsEnabled = true
         feedback.volume = 0.35
         feedback.reduceMotion = false
+        feedback.soundPack = .studio
+        ConsolePreferences.shared.reset()
         showResetComplete = true
     }
 
     private func navigate(_ command: String) {
         switch command {
         case "up": selection = max(0, selection - 1)
-        case "down": selection = min(2, selection + 1)
+        case "down": selection = min(3, selection + 1)
         case "confirm":
-            if selection == 0 { pendingInstall = .epic }
-            else if selection == 1 { pendingInstall = .switchApp }
+            if selection == 0 { Task { await checkEpicUpdates() } }
+            else if selection == 1 { if gogInstalled { showGOGUpdateConfirmation = true } }
+            else if selection == 2 { Task { await checkNXNativeUpdates() } }
             else { showResetConfirmation = true }
         case "back": dismiss()
         default: break

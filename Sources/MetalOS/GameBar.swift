@@ -78,23 +78,28 @@ enum GameBarCapture {
         }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        let url = directory.appendingPathComponent("Game Bar \(formatter.string(from: Date())).png")
+        let suffix = UUID().uuidString.prefix(8)
+        let url = directory.appendingPathComponent("MetalOS \(formatter.string(from: Date())) \(suffix).png")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         process.arguments = ["-x", url.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return .failure(error)
+        let exit = await withCheckedContinuation { (continuation: CheckedContinuation<Result<Int32, Error>, Never>) in
+            process.terminationHandler = { finished in
+                continuation.resume(returning: .success(finished.terminationStatus))
+            }
+            do {
+                try AppProcessSupervisor.run(process)
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(returning: .failure(error))
+            }
         }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in continuation.resume() }
+        switch exit {
+        case .failure(let error): return .failure(error)
+        case .success(0) where FileManager.default.fileExists(atPath: url.path): return .success(url)
+        case .success: return .failure(CocoaError(.fileWriteUnknown))
         }
-        guard process.terminationStatus == 0, FileManager.default.fileExists(atPath: url.path) else {
-            return .failure(CocoaError(.fileWriteUnknown))
-        }
-        return .success(url)
     }
 }

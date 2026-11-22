@@ -385,12 +385,14 @@ final class WindowsStorefrontRuntime: ObservableObject {
         guard FileManager.default.isExecutableFile(atPath: python.path) else { status = "Choose a working Python 3.10+ runtime before installing gogdl."; return }
         isWorking = true; defer { isWorking = false }
         do {
-            let versionOutput = try await Self.run(python, ["--version"], cwd: WindowsRuntimeLayout.root(in: workspace))
+            let root = WindowsRuntimeLayout.root(in: workspace)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let versionOutput = try await Self.run(python, ["--version"], cwd: root)
             let versionParts = versionOutput.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
             guard versionParts.count >= 2, versionParts[0] > 3 || (versionParts[0] == 3 && versionParts[1] >= 10) else {
                 throw StudioError.message("gogdl requires Python 3.10 or newer. Select a newer Python runtime in MetalOS settings.")
             }
-            let tools = WindowsRuntimeLayout.root(in: workspace).appendingPathComponent("Tools", isDirectory: true)
+            let tools = root.appendingPathComponent("Tools", isDirectory: true)
             let repository = tools.appendingPathComponent("heroic-gogdl", isDirectory: true)
             let environment = repository.appendingPathComponent(".venv", isDirectory: true)
             let binary = environment.appendingPathComponent("bin/gogdl")
@@ -878,7 +880,7 @@ final class WindowsStorefrontRuntime: ObservableObject {
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             control.attach(process)
             output.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
@@ -907,7 +909,7 @@ final class WindowsStorefrontRuntime: ObservableObject {
             process.executableURL = executable; process.arguments = arguments; process.currentDirectoryURL = cwd
             process.standardInput = FileHandle.nullDevice; process.standardOutput = output
             process.standardError = discardStandardError ? FileHandle.nullDevice : output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { throw StudioError.message(String(decoding: data.suffix(6000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) }
             return String(decoding: data, as: UTF8.self)

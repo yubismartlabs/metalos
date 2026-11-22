@@ -21,6 +21,9 @@ struct GameDiscovery: Sendable {
             let switchResult = SwitchGameDiscovery.scan(root: root)
             result.games += switchResult.games.filter { seen.insert($0.id).inserted }
             result.warnings += switchResult.warnings
+            let ps2Result = PS2GameDiscovery.scan(root: root)
+            result.games += ps2Result.games.filter { seen.insert($0.id).inserted }
+            result.warnings += ps2Result.warnings
         }
         result.games.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         return result

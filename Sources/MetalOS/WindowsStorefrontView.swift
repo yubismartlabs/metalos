@@ -165,22 +165,22 @@ struct WindowsStorefrontView: View {
             Task { await refreshLibrary() }
         }
         .task { await refreshLibrary() }
-        .confirmationDialog("Uninstall \(pendingUninstall?.title ?? "game")?", isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
-            Button("Uninstall", role: .destructive) {
-                guard let game = pendingUninstall else { return }
-                let provider = runtime.selectedProvider
-                Task {
-                    await runtime.uninstall(game, provider: provider, workspace: store.workspaceURL)
-                    store.mergeOwnedStoreGames(provider == .epic ? runtime.epicGames : runtime.gogGames, provider: provider)
-                    await store.scan()
-                    pendingUninstall = nil
+        .consolePage(isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
+            if let game = pendingUninstall {
+                ActionConfirmationView(title: "Uninstall \(game.title)?",
+                                       message: "The installed game files will be removed. Your store ownership, compatibility settings, and local saves will be kept.",
+                                       confirmTitle: "Uninstall", destructive: true) {
+                    let provider = runtime.selectedProvider
+                    Task {
+                        await runtime.uninstall(game, provider: provider, workspace: store.workspaceURL)
+                        store.mergeOwnedStoreGames(provider == .epic ? runtime.epicGames : runtime.gogGames, provider: provider)
+                        await store.scan()
+                        pendingUninstall = nil
+                    }
                 }
             }
-            Button("Cancel", role: .cancel) { pendingUninstall = nil }
-        } message: {
-            Text("The installed game files will be removed. Your store ownership, compatibility settings, and local saves will be kept.")
         }
-        .sheet(isPresented: Binding(get: { signInURL != nil }, set: { if !$0 { signInURL = nil } })) {
+        .consolePage(isPresented: Binding(get: { signInURL != nil }, set: { if !$0 { signInURL = nil } })) {
             if let url = signInURL {
                 StoreSignInBrowser(title: "Sign in to \(signInProvider.rawValue)", url: url,
                                    session: signInProvider == .epic ? epicStoreBrowserSession : gogStoreBrowserSession) { code in

@@ -83,7 +83,7 @@ struct FirstRunSetupView: View {
                 window.toggleFullScreen(nil)
             }
         }
-        .consoleSheet(isPresented: $showingPicker) {
+        .consolePage(isPresented: $showingPicker) {
             ConsoleFilePicker(title: "Choose your game library folder", mode: .directory, startingPath: selectedFolder?.path ?? defaultFolder()) { url in
                 selectedFolder = url.standardizedFileURL
                 selection = 1

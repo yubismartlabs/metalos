@@ -2,7 +2,7 @@ import AppKit
 import Network
 import SwiftUI
 
-private struct NetworkPathSnapshot {
+struct NetworkPathSnapshot {
     var connected = false
     var headline = "Checking connection…"
     var detail = ""
@@ -13,7 +13,7 @@ private struct NetworkPathSnapshot {
 }
 
 @MainActor
-private final class NetworkPathStatus: ObservableObject {
+final class NetworkPathStatus: ObservableObject {
     @Published private(set) var snapshot = NetworkPathSnapshot()
     private let monitor: NWPathMonitor
     private let queue = DispatchQueue(label: "com.nxstudio.network-path")

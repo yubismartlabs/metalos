@@ -25,6 +25,27 @@ enum WindowsRuntimeLayout {
         environment["SDL_JOYSTICK_MFI"] = "0"
     }
 
+    static func setMetalSharpGameEnvironment(_ values: [String: String], removing keysToRemove: [String] = [], in gameDirectory: URL) throws {
+        let manager = FileManager.default
+        let configDirectory = gameDirectory.appendingPathComponent(".metalsharp", isDirectory: true)
+        let configURL = configDirectory.appendingPathComponent("launch.local.env")
+        let existing = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        var managedKeys = Set(keysToRemove.map { $0.uppercased() })
+        managedKeys.formUnion(values.keys.map { $0.uppercased() })
+        var lines = existing.components(separatedBy: .newlines).filter { line in
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            return parts.first.map { !managedKeys.contains($0.trimmingCharacters(in: .whitespaces).uppercased()) } ?? true
+        }
+        lines.append(contentsOf: values.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" })
+        while lines.last == "" { lines.removeLast() }
+        guard !lines.isEmpty else {
+            if manager.fileExists(atPath: configURL.path) { try manager.removeItem(at: configURL) }
+            return
+        }
+        try manager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        try (lines.joined(separator: "\n") + "\n").write(to: configURL, atomically: true, encoding: .utf8)
+    }
+
     static func root(in workspace: URL) -> URL {
         workspace.appendingPathComponent(".nxstudio/Engines/WindowsGaming", isDirectory: true)
     }
@@ -96,6 +117,23 @@ enum WindowsRuntimeLayout {
         }
         return nil
     }
+    static func winetricksExecutable(in workspace: URL) -> URL? {
+        let manager = FileManager.default
+        let runtimeRoot = wine(in: workspace)
+        let candidates = [
+            runtimeRoot.appendingPathComponent("bin/winetricks"),
+            runtimeRoot.appendingPathComponent("winetricks"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/winetricks"),
+            URL(fileURLWithPath: "/usr/local/bin/winetricks"),
+            manager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/winetricks")
+        ]
+        if let bundled = candidates.first(where: { manager.isExecutableFile(atPath: $0.path) }) { return bundled }
+        for directory in ProcessInfo.processInfo.environment["PATH", default: ""].split(separator: ":") {
+            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true).appendingPathComponent("winetricks")
+            if manager.isExecutableFile(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
 }
 
 private struct HighballLibraryListing: Decodable, Sendable {
@@ -127,7 +165,7 @@ enum HighballLibraryDiscovery {
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
             do {
-                try process.run()
+                try AppProcessSupervisor.run(process)
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 guard process.terminationStatus == 0 else { return [] }
@@ -207,7 +245,7 @@ enum StorefrontLibraryDiscovery {
             let process = Process(); let output = Pipe()
             process.executableURL = executable; process.arguments = arguments
             process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = FileHandle.nullDevice
-            try process.run(); let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+            try AppProcessSupervisor.run(process); let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { throw StudioError.message("Legendary could not read the installed game list.") }
             return String(decoding: data, as: UTF8.self)
         }.value
@@ -269,6 +307,11 @@ final class WindowsWineInstaller: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw StudioError.message("GitHub did not return the Wine release information.") }
             let release = try JSONDecoder().decode(WindowsWineRelease.self, from: data)
+            if readVersion(in: workspace) == release.tagName, readRuntimeName(in: workspace) == runtimeLabel,
+               WindowsRuntimeLayout.wineExecutable(in: workspace) != nil {
+                status = "\(runtimeLabel) \(release.tagName) is already up to date."
+                return
+            }
             let releaseVersion = release.tagName.hasPrefix("v") ? String(release.tagName.dropFirst()) : release.tagName
             let asset = release.assets.first(where: { asset in
                 if useMetalSharpWine {
@@ -373,7 +416,7 @@ final class WindowsWineInstaller: ObservableObject {
             process.arguments = arguments
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
@@ -439,6 +482,12 @@ final class GamePortingToolkitInstaller: ObservableObject {
             let (releaseData, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw StudioError.message("GitHub did not return Game Porting Toolkit release information.") }
             let release = try JSONDecoder().decode(WindowsWineRelease.self, from: releaseData)
+            let marker = root.appendingPathComponent("gptk-version.txt")
+            if FileManager.default.isExecutableFile(atPath: WindowsRuntimeLayout.gamePortingToolkitWine(in: workspace).path),
+               (try? String(contentsOf: marker, encoding: .utf8).components(separatedBy: .newlines).first) == release.tagName {
+                status = "Game Porting Toolkit \(release.tagName) is already up to date."
+                return
+            }
             let suffix = release.tagName.replacingOccurrences(of: "Game-Porting-Toolkit-", with: "")
             guard let asset = release.assets.first(where: { $0.name == "game-porting-toolkit-\(suffix).tar.xz" }),
                   asset.size > 0, asset.size < 1_500_000_000,
@@ -513,7 +562,7 @@ final class GamePortingToolkitInstaller: ObservableObject {
             process.arguments = arguments
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
@@ -537,7 +586,7 @@ final class WindowsClientInstaller: ObservableObject {
         await installHighballClient(name: "MetalOS-Rockstar", recipe: "rockstar", workspace: workspace, engine: .rockstar)
     }
 
-    func installStandaloneInstaller(at installer: URL, workspace: URL?) async -> String? {
+    func installStandaloneInstaller(at installer: URL, workspace: URL?, lutrisProfile: LutrisWineProfile? = nil) async -> String? {
         guard !isWorking else { return nil }
         guard let workspace else { status = "Choose a library folder first."; return nil }
         guard installer.pathExtension.lowercased() == "exe", FileManager.default.isReadableFile(atPath: installer.path) else {
@@ -562,15 +611,35 @@ final class WindowsClientInstaller: ObservableObject {
             try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
             status = "Preparing a clean Windows prefix…"
             _ = try await Self.runWine(wine, arguments: ["wineboot", "-u", "-r"], prefix: prefix,
-                                       workingDirectory: installer.deletingLastPathComponent())
+                                       workingDirectory: installer.deletingLastPathComponent(), architecture: lutrisProfile?.architecture)
             let wineserver = wine.deletingLastPathComponent().appendingPathComponent("wineserver")
             if FileManager.default.isExecutableFile(atPath: wineserver.path) {
                 _ = try await Self.runWine(wineserver, arguments: ["-w"], prefix: prefix,
-                                           workingDirectory: installer.deletingLastPathComponent())
+                                           workingDirectory: installer.deletingLastPathComponent(), architecture: lutrisProfile?.architecture)
+            }
+            if let lutrisProfile, !lutrisProfile.winetricks.isEmpty {
+                guard let winetricks = WindowsRuntimeLayout.winetricksExecutable(in: workspace) else {
+                    throw StudioError.message("This Lutris profile needs Winetricks (\(lutrisProfile.winetricks.joined(separator: ", "))), but no Winetricks executable was found. Install it with Homebrew, then try again.")
+                }
+                status = "Installing Lutris dependencies: \(lutrisProfile.winetricks.joined(separator: ", "))…"
+                _ = try await Self.runWine(winetricks, arguments: ["-q"] + lutrisProfile.winetricks, prefix: prefix,
+                                           workingDirectory: installer.deletingLastPathComponent(),
+                                           architecture: lutrisProfile.architecture, wineBinary: wine)
+            }
+            if let lutrisProfile, !lutrisProfile.overrides.isEmpty {
+                status = "Applying Lutris DLL overrides…"
+                for (dll, value) in lutrisProfile.overrides.sorted(by: { $0.key < $1.key }) {
+                    let safeDLL = URL(fileURLWithPath: dll).lastPathComponent
+                    guard safeDLL.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil else { continue }
+                    let override = Self.wineOverrideValue(value)
+                    _ = try await Self.runWine(wine, arguments: ["reg", "add", "HKCU\\Software\\Wine\\DllOverrides", "/v", safeDLL, "/d", override, "/f"],
+                                               prefix: prefix, workingDirectory: installer.deletingLastPathComponent(),
+                                               architecture: lutrisProfile.architecture)
+                }
             }
             status = "Opening the Windows installer in its managed Wine prefix…"
             _ = try await Self.runWine(wine, arguments: [installer.path], prefix: prefix,
-                                       workingDirectory: installer.deletingLastPathComponent())
+                                       workingDirectory: installer.deletingLastPathComponent(), architecture: lutrisProfile?.architecture)
             status = "Installer closed. Select the installed game’s .exe to add it to the library."
             return bottleName
         } catch {
@@ -751,7 +820,7 @@ final class WindowsClientInstaller: ObservableObject {
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
@@ -771,7 +840,7 @@ final class WindowsClientInstaller: ObservableObject {
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
@@ -781,7 +850,8 @@ final class WindowsClientInstaller: ObservableObject {
         }.value
     }
 
-    private nonisolated static func runWine(_ executable: URL, arguments: [String], prefix: URL, workingDirectory: URL) async throws -> String {
+    private nonisolated static func runWine(_ executable: URL, arguments: [String], prefix: URL, workingDirectory: URL,
+                                            architecture: String? = nil, wineBinary: URL? = nil) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             let output = Pipe()
@@ -791,12 +861,14 @@ final class WindowsClientInstaller: ObservableObject {
             var environment = ProcessInfo.processInfo.environment
             environment["WINEPREFIX"] = prefix.path
             environment["WINEDEBUG"] = "-all"
+            if let architecture { environment["WINEARCH"] = architecture }
+            if let wineBinary { environment["WINE"] = wineBinary.path }
             WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
             process.environment = environment
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
@@ -804,6 +876,16 @@ final class WindowsClientInstaller: ObservableObject {
             }
             return String(decoding: data, as: UTF8.self)
         }.value
+    }
+
+    private nonisolated static func wineOverrideValue(_ value: String) -> String {
+        value.lowercased().split(separator: ",").map { part in
+            switch part.trimmingCharacters(in: .whitespaces) {
+            case "n": "native"
+            case "b": "builtin"
+            default: part.trimmingCharacters(in: .whitespaces)
+            }
+        }.joined(separator: ",")
     }
 
     private nonisolated static func latestRockstarEngine(in repository: URL) -> URL? {

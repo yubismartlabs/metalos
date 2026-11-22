@@ -64,7 +64,16 @@ private final class WindowsBottleTools: ObservableObject {
                 ? ["msiexec", "/i", installer.path]
                 : [installer.path]
             let workingDirectory = installer.deletingLastPathComponent()
-            let result = try await Self.run(wine, arguments: args, prefix: prefix, workingDirectory: workingDirectory)
+            if let profile = game.lutrisWineProfile {
+                for (executable, version) in profile.wineAppVersionOverrides {
+                    _ = try await Self.run(wine,
+                                           arguments: ["reg", "add", "HKCU\\Software\\Wine\\AppDefaults\\\(executable)",
+                                                       "/v", "Version", "/t", "REG_SZ", "/d", version, "/f"],
+                                           prefix: prefix, workingDirectory: workingDirectory, profile: profile)
+                }
+            }
+            let result = try await Self.run(wine, arguments: args, prefix: prefix, workingDirectory: workingDirectory,
+                                           profile: game.lutrisWineProfile)
             let wineserver = wine.deletingLastPathComponent().appendingPathComponent("wineserver")
             if FileManager.default.isExecutableFile(atPath: wineserver.path) {
                 status = "Waiting for the bottle installer to finish…"
@@ -92,7 +101,8 @@ private final class WindowsBottleTools: ObservableObject {
         return candidate
     }
 
-    private nonisolated static func run(_ executable: URL, arguments: [String], prefix: URL, workingDirectory: URL) async throws -> String {
+    private nonisolated static func run(_ executable: URL, arguments: [String], prefix: URL, workingDirectory: URL,
+                                        profile: LutrisWineProfile? = nil) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             let output = Pipe()
@@ -102,12 +112,20 @@ private final class WindowsBottleTools: ObservableObject {
             var environment = ProcessInfo.processInfo.environment
             environment["WINEPREFIX"] = prefix.path
             environment["WINEDEBUG"] = "-all"
+            if let profile {
+                for (key, value) in profile.environment where !["WINE", "WINEPREFIX", "WINEARCH"].contains(key.uppercased()) {
+                    environment[key] = profile.expand(value, prefix: prefix)
+                }
+                if !profile.overrides.isEmpty { environment["WINEDLLOVERRIDES"] = profile.wineDLLOverrides }
+                environment["WINEPREFIX"] = prefix.path
+                environment["WINEARCH"] = profile.architecture
+            }
             WindowsRuntimeLayout.configureGamepadEnvironment(&environment)
             process.environment = environment
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
@@ -144,7 +162,7 @@ struct WindowsBottleToolsView: View {
         return activePrefix != bottle && FileManager.default.fileExists(atPath: duplicate.path) ? duplicate : nil
     }
     private var actions: [(String, String, String)] {
-        [("Install a patch or runtime", "Run an .exe or .msi inside this game's bottle.", "wrench.and.screwdriver"),
+        [(game.windowsExecutablePath == nil ? "Install game, patch, or runtime" : "Install a patch or runtime", "Run a manually selected .exe or .msi inside this game's bottle.", "wrench.and.screwdriver"),
          ("Add a file", "Copy a file beside the game executable.", "doc.badge.plus"),
          ("Add a folder", "Copy a folder beside the game executable.", "folder.badge.plus"),
          ("Open bottle files", "Browse this game's Windows C: drive in Finder.", "folder")]
@@ -209,7 +227,7 @@ struct WindowsBottleToolsView: View {
             default: break
             }
         }
-        .consoleSheet(isPresented: Binding(get: { picker != nil }, set: { if !$0 { picker = nil } })) {
+        .consolePage(isPresented: Binding(get: { picker != nil }, set: { if !$0 { picker = nil } })) {
             if let picker {
                 let directory = prefix?.appendingPathComponent("drive_c", isDirectory: true).path
                 ConsoleFilePicker(title: picker == .patch ? "Choose a Windows patch or runtime" : picker == .file ? "Choose a file to add to the game" : "Choose a folder to add to the game",

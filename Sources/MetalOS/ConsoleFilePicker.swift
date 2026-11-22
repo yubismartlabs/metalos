@@ -52,7 +52,7 @@ struct ConsoleFilePicker: View {
     let startingPath: String?
     let allowedExtensions: Set<String>
     let onSelect: (URL) -> Void
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.consolePageClose) private var closePage
     @State private var directory: URL
     @State private var listing = ConsoleBrowserListing()
     @State private var showHidden = false
@@ -102,7 +102,7 @@ struct ConsoleFilePicker: View {
                     Text(title).font(.system(size: 26, weight: .light)).lineLimit(1)
                 }
                 Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark").padding(10).background(.white.opacity(0.07), in: Circle()) }
+                Button { closePage() } label: { Image(systemName: "xmark").padding(10).background(.white.opacity(0.07), in: Circle()) }
                     .buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Cancel file selection")
             }
             HStack(spacing: 12) {
@@ -163,11 +163,12 @@ struct ConsoleFilePicker: View {
             }
             Text(mode == .directory ? "A  Open folder     X  Use current folder     B  Parent     Y  Hidden     LB / RB  Locations" : "A  Open / select     B  Parent     Y  Hidden     LB / RB  Locations")
                 .font(.system(size: 9)).foregroundStyle(.secondary)
-        }.padding(26).frame(width: 860, height: 600).background(studioBackground).preferredColorScheme(.dark).tint(studioAccent)
+        }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(studioBackground.ignoresSafeArea()).preferredColorScheme(.dark).tint(studioAccent)
             .task { await reload() }
             .animation(ConsoleFeedback.shared.focusAnimation, value: selectedID)
             .consoleInput(onCommand: navigate)
-            .consoleSheet(isPresented: $searchOpen) {
+            .consolePage(isPresented: $searchOpen) {
                 SearchKeyboardView(query: $filter, title: "Find in folder", subtitle: "Search the names in this folder.", doneTitle: "Find") {
                     searchOpen = false; entryIndex = 0; Task { await reload() }
                 }
@@ -176,7 +177,7 @@ struct ConsoleFilePicker: View {
     private func activate(_ entry: ConsoleBrowserEntry) {
         guard !loading else { return }
         if entry.isDirectory && (mode != .application || !entry.isApplication) { open(entry.url) }
-        else { onSelect(entry.url); dismiss() }
+        else { onSelect(entry.url); closePage() }
     }
     private func open(_ url: URL) {
         history.append(directory); directory = url.standardizedFileURL; entryIndex = 0; filter = ""
@@ -185,7 +186,7 @@ struct ConsoleFilePicker: View {
     private func goBack() {
         if !history.isEmpty { directory = history.removeLast(); entryIndex = 0; Task { await reload() }; return }
         let parent = directory.deletingLastPathComponent()
-        if parent.path == directory.path { dismiss() }
+        if parent.path == directory.path { closePage() }
         else { directory = parent; entryIndex = 0; Task { await reload() } }
     }
     private func reload() async {
@@ -199,8 +200,8 @@ struct ConsoleFilePicker: View {
         if mode == .directory && index == 0 {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue else { listing.message = "This folder is no longer available."; return }
-            onSelect(directory); dismiss()
-        } else if index == actions.count - 1 { dismiss() }
+            onSelect(directory); closePage()
+        } else if index == actions.count - 1 { closePage() }
         else if index == (mode == .directory ? 1 : 0) { searchOpen = true }
         else { showHidden.toggle(); Task { await reload() } }
     }

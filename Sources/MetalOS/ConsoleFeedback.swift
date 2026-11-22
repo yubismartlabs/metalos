@@ -17,7 +17,7 @@ enum NavigationCue: CaseIterable, Hashable {
 /// Original, short synthesized cues; no system alert or console audio files are used.
 enum NavigationTone {
     static let sampleRate = 24_000
-    static func wave(_ cue: NavigationCue) -> Data {
+    static func wave(_ cue: NavigationCue, pack: ConsoleSoundPack = .studio) -> Data {
         let duration: Double
         switch cue {
         case .move: duration = 0.038
@@ -29,10 +29,11 @@ enum NavigationTone {
         let frames = Int(duration * Double(sampleRate))
         var samples = Data(capacity: frames * 2)
         for frame in 0..<frames {
-            let t = Double(frame) / Double(sampleRate)
-            let attack = min(t / 0.003, 1)
-            let release = min((duration - t) / 0.012, 1)
-            let envelope = attack * release * exp(-t * (cue == .move ? 65 : 22))
+            let elapsed = Double(frame) / Double(sampleRate)
+            let t = elapsed * (pack == .soft ? 0.68 : 1)
+            let attack = min(elapsed / 0.003, 1)
+            let release = min((duration - elapsed) / 0.012, 1)
+            let envelope = attack * release * exp(-elapsed * (cue == .move ? 65 : 22))
             let signal: Double
             switch cue {
             case .move: signal = sin(2 * .pi * (1100 * t - 1600 * t * t)) * 0.16
@@ -60,6 +61,13 @@ final class ConsoleFeedback: ObservableObject {
     @Published var soundsEnabled: Bool { didSet { defaults.set(soundsEnabled, forKey: "console.sounds"); if !soundsEnabled { sounds.values.forEach { $0.stop() } } } }
     @Published var volume: Double { didSet { defaults.set(volume, forKey: "console.soundVolume") } }
     @Published var reduceMotion: Bool { didSet { defaults.set(reduceMotion, forKey: "console.reduceMotion") } }
+    @Published var soundPack: ConsoleSoundPack {
+        didSet {
+            defaults.set(soundPack.rawValue, forKey: "console.soundPack")
+            sounds.values.forEach { $0.stop() }
+            sounds.removeAll()
+        }
+    }
     private let defaults: UserDefaults
     private var sounds: [NavigationCue: NSSound] = [:]
     private var lastPlay: [NavigationCue: TimeInterval] = [:]
@@ -69,6 +77,7 @@ final class ConsoleFeedback: ObservableObject {
         let saved = defaults.object(forKey: "console.soundVolume") as? Double ?? 0.35
         volume = saved.isFinite ? min(max(saved, 0), 1) : 0.35
         reduceMotion = defaults.bool(forKey: "console.reduceMotion")
+        soundPack = ConsoleSoundPack(rawValue: defaults.string(forKey: "console.soundPack") ?? "") ?? .studio
     }
     var motionReduced: Bool { reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     var focusAnimation: Animation? { motionReduced ? nil : .spring(response: 0.24, dampingFraction: 0.84) }
@@ -81,7 +90,7 @@ final class ConsoleFeedback: ObservableObject {
         let now = Date.timeIntervalSinceReferenceDate
         guard now - (lastPlay[cue] ?? 0) >= (cue == .move ? 0.07 : 0.035) else { return }
         lastPlay[cue] = now
-        if sounds[cue] == nil { sounds[cue] = NSSound(data: NavigationTone.wave(cue)) }
+        if sounds[cue] == nil { sounds[cue] = NSSound(data: NavigationTone.wave(cue, pack: soundPack)) }
         guard let sound = sounds[cue] else { return }
         sound.stop(); sound.volume = Float(min(volume, 1)); sound.play()
     }
@@ -146,8 +155,8 @@ extension EnvironmentValues {
     }
 }
 
-// Blur only the presenting surface; the sheet stays sharp in its own window.
-private struct ConsoleModalBackdrop: ViewModifier {
+// Blur the surface behind a transient overlay such as the game options menu.
+private struct ConsoleOverlayBackdrop: ViewModifier {
     @ObservedObject private var feedback = ConsoleFeedback.shared
     let presented: Bool
     func body(content: Content) -> some View {
@@ -157,25 +166,35 @@ private struct ConsoleModalBackdrop: ViewModifier {
             .animation(feedback.pageAnimation, value: presented)
     }
 }
-private struct ConsoleModalEntrance: ViewModifier {
-    @ObservedObject private var feedback = ConsoleFeedback.shared
-    @State private var appeared = false
-    func body(content: Content) -> some View {
-        content
-            .opacity(appeared || feedback.motionReduced ? 1 : 0)
-            .scaleEffect(appeared || feedback.motionReduced ? 1 : 0.96)
-            .offset(y: appeared || feedback.motionReduced ? 0 : 12)
-            .onAppear { withAnimation(feedback.pageAnimation) { appeared = true } }
+private struct ConsolePageCloseKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var consolePageClose: () -> Void {
+        get { self[ConsolePageCloseKey.self] }
+        set { self[ConsolePageCloseKey.self] = newValue }
     }
 }
+
 extension View {
-    func consoleModalBackdrop(_ presented: Bool) -> some View {
-        modifier(ConsoleModalBackdrop(presented: presented))
+    func consoleOverlayBackdrop(_ presented: Bool) -> some View {
+        modifier(ConsoleOverlayBackdrop(presented: presented))
     }
-    func consoleSheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: @escaping () -> Content) -> some View {
-        consoleModalBackdrop(isPresented.wrappedValue)
-            .sheet(isPresented: isPresented, onDismiss: onDismiss) {
-                content().modifier(ConsoleModalEntrance())
+    func consolePage<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: @escaping () -> Content) -> some View {
+        overlay {
+            if isPresented.wrappedValue {
+                content()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(StudioAppearance.shared.background.ignoresSafeArea())
+                    .environment(\.consolePageClose, { isPresented.wrappedValue = false })
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(1000)
             }
+        }
+        .animation(ConsoleFeedback.shared.pageAnimation, value: isPresented.wrappedValue)
+        .onChange(of: isPresented.wrappedValue) { wasPresented, isPresented in
+            if wasPresented && !isPresented { onDismiss?() }
+        }
     }
 }

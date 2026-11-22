@@ -2,6 +2,11 @@ import AppKit
 import SwiftUI
 import WebKit
 
+struct DownloadSaveRequest: Identifiable {
+    let id = UUID()
+    let suggestedFilename: String
+}
+
 @MainActor
 final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let webView: WKWebView
@@ -15,10 +20,16 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published var pageInputText = ""
     @Published var pageInputIsSecure = false
     @Published var externalAuthenticationMessage = ""
+    @Published var pendingDownload: DownloadSaveRequest?
     var onAuthorizationCodeDetected: ((String) -> Void)?
     private var lastReportedAuthorizationCode: String?
+    private var downloadDestinationHandler: ((URL?) -> Void)?
 
-    override init() {
+    override convenience init() {
+        self.init(startingAt: URL(string: "https://www.google.com")!)
+    }
+
+    init(startingAt url: URL) {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -26,7 +37,8 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        webView.load(URLRequest(url: URL(string: address)!))
+        address = url.absoluteString
+        webView.load(URLRequest(url: url))
     }
 
     func loadAddress(_ rawValue: String) {
@@ -177,14 +189,48 @@ final class InAppBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
                   completionHandler: @escaping (URL?) -> Void) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = suggestedFilename
-        panel.canCreateDirectories = true
-        panel.begin { [weak self] result in
-            guard result == .OK, let url = panel.url else { completionHandler(nil); return }
-            Task { @MainActor in self?.downloadStatus = "Saving \(url.lastPathComponent)…" }
-            completionHandler(url)
+        downloadDestinationHandler?(nil)
+        let safeName = URL(fileURLWithPath: suggestedFilename).lastPathComponent
+        downloadDestinationHandler = completionHandler
+        pendingDownload = DownloadSaveRequest(suggestedFilename: safeName.isEmpty ? "download" : safeName)
+    }
+    func finishDownloadSave(folder: URL, filename: String) {
+        guard let completion = downloadDestinationHandler else { return }
+        let safeName = URL(fileURLWithPath: filename).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !safeName.isEmpty else { return }
+        let destination = nonOverwritingURL(folder: folder, filename: safeName)
+        downloadDestinationHandler = nil
+        pendingDownload = nil
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            downloadStatus = "Could not create the download folder: \(error.localizedDescription)"
+            completion(nil)
+            return
         }
+        downloadStatus = "Saving \(destination.lastPathComponent)…"
+        completion(destination)
+    }
+    func cancelDownloadSave() {
+        guard let completion = downloadDestinationHandler else { pendingDownload = nil; return }
+        downloadDestinationHandler = nil
+        pendingDownload = nil
+        downloadStatus = "Download canceled"
+        completion(nil)
+    }
+    private func nonOverwritingURL(folder: URL, filename: String) -> URL {
+        let original = URL(fileURLWithPath: filename)
+        let base = original.deletingPathExtension().lastPathComponent
+        let ext = original.pathExtension
+        var candidate = folder.appendingPathComponent(filename)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let name = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
+            candidate = folder.appendingPathComponent(name)
+            suffix += 1
+        }
+        return candidate
     }
     func downloadDidFinish(_ download: WKDownload) { downloadStatus = "Download complete" }
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
@@ -386,7 +432,7 @@ struct InAppBrowserView: View {
         }
         .consoleInput(onCommand: navigate)
         .onDisappear { controller.leftStickPointerAction = nil }
-        .consoleSheet(isPresented: $keyboardOpen) {
+        .consolePage(isPresented: $keyboardOpen) {
             SearchKeyboardView(query: $keyboardText, title: keyboardTargetIsAddress ? "Enter address" : keyboardTargetIsAuthCode ? "Authorization code" : "Enter text",
                                subtitle: keyboardTargetIsAddress ? "Search the web or enter a website address." : keyboardTargetIsAuthCode ? "Enter the code returned by the store." : "Type into the selected web form field.",
                                doneTitle: keyboardTargetIsAddress ? "Go" : keyboardTargetIsAuthCode ? "Save code" : "Enter", secure: keyboardIsSecure,
@@ -398,6 +444,16 @@ struct InAppBrowserView: View {
                 } else if keyboardTargetIsAuthCode { session.authorizationCode = keyboardText }
                 else { session.submitText(keyboardText) }
                 keyboardOpen = false
+            }
+        }
+        .consolePage(
+            isPresented: Binding(
+                get: { session.pendingDownload != nil },
+                set: { if !$0 { session.cancelDownloadSave() } }
+            )
+        ) {
+            if let request = session.pendingDownload {
+                DownloadSavePage(session: session, request: request)
             }
         }
     }
@@ -487,6 +543,84 @@ struct InAppBrowserView: View {
         case "previous": session.goBack()
         case "next": session.goForward()
         default: break
+        }
+    }
+}
+
+private struct DownloadSavePage: View {
+    @ObservedObject var session: InAppBrowserSession
+    let request: DownloadSaveRequest
+    @Environment(\.consolePageClose) private var closePage
+    @State private var filename: String
+    @State private var folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+    @State private var choosingFolder = false
+    @State private var focusedAction = 0
+
+    init(session: InAppBrowserSession, request: DownloadSaveRequest) {
+        self.session = session
+        self.request = request
+        _filename = State(initialValue: request.suggestedFilename)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(spacing: 16) {
+                Image(systemName: "arrow.down.to.line.compact")
+                    .font(.system(size: 26, weight: .light)).foregroundStyle(studioAccent)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("SAVE DOWNLOAD").font(.system(size: 10, weight: .bold)).tracking(2).foregroundStyle(studioAccent)
+                    Text("Choose where to save this file").font(.system(size: 26, weight: .light))
+                }
+                Spacer()
+                Button { session.cancelDownloadSave(); closePage() } label: {
+                    Image(systemName: "xmark").padding(10).background(.white.opacity(0.07), in: Circle())
+                }.buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Cancel download")
+            }
+            Text("The download will be saved on this Mac. If a file with the same name already exists, MetalOS will add a number to the new filename.")
+                .font(.system(size: 13)).foregroundStyle(.white.opacity(0.58)).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 680, alignment: .leading)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("FILE NAME").font(.system(size: 10, weight: .bold)).tracking(1.4).foregroundStyle(.white.opacity(0.55))
+                TextField("File name", text: $filename)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 600)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("SAVE TO").font(.system(size: 10, weight: .bold)).tracking(1.4).foregroundStyle(.white.opacity(0.55))
+                HStack(spacing: 14) {
+                    Image(systemName: "folder").foregroundStyle(studioAccent)
+                    Text(folder.path).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Choose Folder…") { choosingFolder = true }
+                        .buttonStyle(.bordered).consoleFocus(focusedAction == 0, cornerRadius: 8)
+                }.padding(14).frame(maxWidth: 800).background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            }
+            HStack(spacing: 12) {
+                Button { session.finishDownloadSave(folder: folder, filename: filename); closePage() } label: {
+                    Label("Save Download", systemImage: "arrow.down.to.line.compact").frame(minWidth: 160, minHeight: 42)
+                }.buttonStyle(.borderedProminent).tint(studioAccent).consoleFocus(focusedAction == 1, cornerRadius: 9)
+                    .disabled(filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel") { session.cancelDownloadSave(); closePage() }
+                    .buttonStyle(.bordered).consoleFocus(focusedAction == 2, cornerRadius: 9)
+            }
+            Spacer(minLength: 0)
+            Text("A  Activate     B  Cancel").font(.system(size: 10)).foregroundStyle(.white.opacity(0.42))
+        }
+        .padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(studioBackground.ignoresSafeArea()).preferredColorScheme(.dark).tint(studioAccent)
+        .consoleInput { command in
+            switch command {
+            case "left": focusedAction = max(0, focusedAction - 1)
+            case "right": focusedAction = min(2, focusedAction + 1)
+            case "confirm":
+                if focusedAction == 0 { choosingFolder = true }
+                else if focusedAction == 1 { session.finishDownloadSave(folder: folder, filename: filename); closePage() }
+                else { session.cancelDownloadSave(); closePage() }
+            case "back": session.cancelDownloadSave(); closePage()
+            default: break
+            }
+        }
+        .consolePage(isPresented: $choosingFolder) {
+            ConsoleFilePicker(title: "Choose Download Folder", mode: .directory, startingPath: folder.path) { folder = $0 }
         }
     }
 }

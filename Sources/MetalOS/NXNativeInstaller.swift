@@ -316,7 +316,7 @@ final class NXNativeInstaller: ObservableObject {
             process.environment = commandEnvironment()
             process.standardOutput = output
             process.standardError = output
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
@@ -333,7 +333,7 @@ final class NXNativeInstaller: ObservableObject {
                 process.environment = commandEnvironment()
                 process.standardOutput = output
                 process.standardError = output
-                try process.run()
+                try AppProcessSupervisor.run(process)
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 let text = String(decoding: data, as: UTF8.self)

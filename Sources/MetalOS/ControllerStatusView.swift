@@ -75,7 +75,7 @@ struct ControllerBatteryBadge: View {
     }
 }
 struct ControllerStatusView: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.consolePageClose) private var closePage
     @ObservedObject private var controller = ControllerManager.shared
     @State private var selectedID: String?
     @State private var controlsFocused = false
@@ -96,7 +96,7 @@ struct ControllerStatusView: View {
                     Text("Controllers").font(.system(size: 33, weight: .light))
                 }
                 Spacer()
-                Button { dismiss() } label: {
+                Button { closePage() } label: {
                     Image(systemName: "xmark").padding(10).background(.white.opacity(0.07), in: Circle())
                 }.buttonStyle(ConsoleButtonStyle()).accessibilityLabel("Close controllers").keyboardShortcut(.cancelAction)
             }
@@ -152,7 +152,7 @@ struct ControllerStatusView: View {
             .onAppear { controller.refreshStatus(); reconcileSelection() }
             .onChange(of: controller.devices.map(\.id)) { _, _ in reconcileSelection() }
             .consoleInput(onCommand: navigate)
-            .consoleSheet(isPresented: $showTester) { GamepadTesterView(initialDeviceID: device?.id, lightingGuide: lightingGuide) }
+            .consolePage(isPresented: $showTester) { GamepadTesterView(initialDeviceID: device?.id, lightingGuide: lightingGuide) }
     }
     private func deviceDetails(_ device: ControllerStatus) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -218,8 +218,8 @@ struct ControllerStatusView: View {
     }
     private func navigate(_ command: String) {
         switch command {
-        case "back": if controlsFocused { controlsFocused = false } else { dismiss() }
-        case "menu", "context": dismiss()
+        case "back": if controlsFocused { controlsFocused = false } else { closePage() }
+        case "menu", "context": closePage()
         case "previous": switchDevice(-1)
         case "next": switchDevice(1)
         case "up", "down":

@@ -21,6 +21,7 @@ final class ControllerManager: ObservableObject {
     private var testSessions: Set<UUID> = []
     private var hapticEngines: [String: CHHapticEngine] = [:]
     private var hapticPlayers: [String: CHHapticPatternPlayer] = [:]
+    private var lastNavigationHaptic = Date.distantPast
     private var statusTimer: Timer?
     private var inputHandlers: [(id: UUID, action: (String) -> Void)] = []
     var action: ((String) -> Void)?
@@ -156,13 +157,14 @@ final class ControllerManager: ObservableObject {
             pad.buttonHome?.pressedChangedHandler = { [weak self] _, value, pressed in
                 Task { @MainActor in
                     self?.buttonStates["home"] = pressed
-                    guard pressed else { return }
-                    if !NSApp.isActive, self?.inactiveAppAction?("home") == true { return }
-                    if NSApp.isActive, let self {
+                    guard pressed, let self, self.testSessions.isEmpty else { return }
+                    if self.overlayRoute?("home") == true { return }
+                    if !NSApp.isActive, self.inactiveAppAction?("home") == true { return }
+                    if NSApp.isActive {
                         if !self.inputHandlers.isEmpty { self.deliver("home"); return }
                         if let homeAction = self.homeAction { homeAction(); return }
                     }
-                    self?.toggleOverlay()
+                    self.toggleOverlay()
                 }
             }
             pad.leftTrigger.valueChangedHandler = { [weak self] _, value, _ in
@@ -188,13 +190,18 @@ final class ControllerManager: ObservableObject {
     private func deliver(_ command: String) {
         // Testing captures raw inputs without operating menus or the in-game overlay.
         guard testSessions.isEmpty else { return }
-        if overlayRoute?(command) == true { ConsoleFeedback.shared.respond(to: command); return }
+        if overlayRoute?(command) == true {
+            ConsoleFeedback.shared.respond(to: command)
+            navigationHaptic(for: command)
+            return
+        }
         if !NSApp.isActive {
             if inactiveAppAction?(command) == true { ConsoleFeedback.shared.respond(to: command) }
             return
         }
         guard NSApp.modalWindow == nil else { return }
         ConsoleFeedback.shared.respond(to: command)
+        navigationHaptic(for: command)
         // A modal scope owns input until dismissed. Route to it before global
         // shortcuts so the same press cannot affect the library behind a sheet.
         if let handler = inputHandlers.last { handler.action(command); return }
@@ -243,7 +250,15 @@ final class ControllerManager: ObservableObject {
         return true
     }
     /// Keep the controller-created engine and player alive until playback finishes.
-    func playHaptics(for controller: GCController) throws {
+    private func navigationHaptic(for command: String) {
+        guard ConsolePreferences.shared.haptics, ConsoleDirection(rawValue: command) != nil,
+              Date().timeIntervalSince(lastNavigationHaptic) >= 0.12,
+              let controller = GCController.current ?? connectedControllers.first else { return }
+        lastNavigationHaptic = Date()
+        try? playHaptics(for: controller, transient: true)
+    }
+
+    func playHaptics(for controller: GCController, transient: Bool = false) throws {
         guard let haptics = controller.haptics, !haptics.supportedLocalities.isEmpty,
               GCController.controllers().contains(where: { $0 === controller }) else { throw ControllerConfigurationError.hapticsUnavailable }
         let id = Self.deviceID(controller)
@@ -256,10 +271,13 @@ final class ControllerManager: ObservableObject {
         }
         try hapticPlayers[id]?.stop(atTime: CHHapticTimeImmediate)
         try engine.start()
-        let event = CHHapticEvent(eventType: .hapticContinuous, parameters: [
-            CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.6),
+        let parameters = [
+            CHHapticEventParameter(parameterID: .hapticIntensity, value: transient ? 0.3 : 0.6),
             CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.35)
-        ], relativeTime: 0, duration: 0.3)
+        ]
+        let event = transient
+            ? CHHapticEvent(eventType: .hapticTransient, parameters: parameters, relativeTime: 0)
+            : CHHapticEvent(eventType: .hapticContinuous, parameters: parameters, relativeTime: 0, duration: 0.3)
         let player = try engine.makePlayer(with: CHHapticPattern(events: [event], parameters: []))
         hapticPlayers[id] = player
         try player.start(atTime: CHHapticTimeImmediate)

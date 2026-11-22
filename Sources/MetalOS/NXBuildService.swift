@@ -190,7 +190,7 @@ final class NXBuildService: ObservableObject {
                 Task { @MainActor in self?.finish(exitCode: terminated.terminationStatus) }
             }
             process = task
-            try task.run()
+            try AppProcessSupervisor.run(task)
             isBuilding = true
             status = "Building \(game.title)…"
             progressDetail = "Starting NXNative…"

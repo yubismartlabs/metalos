@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 struct ActionConfirmationView: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.consolePageClose) private var closePage
     @State private var selection = 0
     let title: String
     let message: String
@@ -22,18 +22,19 @@ struct ActionConfirmationView: View {
             }
             Text(message).font(.system(size: 13)).foregroundStyle(.white.opacity(0.66)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 8) {
-                confirmRow(confirmTitle, symbol: destructive ? "trash" : "checkmark", selected: selection == 0, destructive: destructive) { onConfirm(); dismiss() }
-                confirmRow("Cancel", symbol: "xmark", selected: selection == 1, destructive: false) { dismiss() }
+                confirmRow(confirmTitle, symbol: destructive ? "trash" : "checkmark", selected: selection == 0, destructive: destructive) { onConfirm(); closePage() }
+                confirmRow("Cancel", symbol: "xmark", selected: selection == 1, destructive: false) { closePage() }
             }
             Text("↑ ↓  Choose     A / ×  Confirm     B / ○  Cancel").font(.system(size: 10)).foregroundStyle(.secondary)
-        }.padding(28).frame(width: 600).background(studioBackground).preferredColorScheme(.dark)
+        }.padding(48).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(studioBackground.ignoresSafeArea()).preferredColorScheme(.dark)
             .animation(ConsoleFeedback.shared.focusAnimation, value: selection)
             .consoleInput { command in
                 switch command {
                 case "up", "left": selection = max(selection - 1, 0)
                 case "down", "right": selection = min(selection + 1, 1)
-                case "confirm": if selection == 0 { onConfirm(); dismiss() } else { dismiss() }
-                case "back": dismiss()
+                case "confirm": if selection == 0 { onConfirm(); closePage() } else { closePage() }
+                case "back": closePage()
                 default: break
                 }
             }
@@ -139,7 +140,7 @@ struct SwitchImportView: View {
                 default: break
                 }
             }
-            .consoleSheet(isPresented: Binding(get: { picker != nil }, set: { if !$0 { picker = nil } })) {
+            .consolePage(isPresented: Binding(get: { picker != nil }, set: { if !$0 { picker = nil } })) {
                 if let picker {
                     let label = picker == .base ? "base game" : picker == .update ? "game update" : "DLC"
                     ConsoleFilePicker(title: "Choose \(label) file", mode: .file, allowedExtensions: SwitchGameDiscovery.extensions) { url in
@@ -152,7 +153,7 @@ struct SwitchImportView: View {
                     }
                 }
             }
-            .consoleSheet(isPresented: $showAddConfirmation) {
+            .consolePage(isPresented: $showAddConfirmation) {
                 ActionConfirmationView(title: "Add \(title)?", message: "MetalOS will copy the selected base game, update, and DLC into this game’s folder in your library.", confirmTitle: "Add game") {
                     guard let baseGame else { return }
                     store.importSwitch(baseGame: baseGame.path, update: update?.path, dlcs: dlcs.map(\.path))
@@ -281,7 +282,7 @@ struct BuildPanel: View {
                 default: break
                 }
             }
-            .consoleSheet(isPresented: $showConfirmation) {
+            .consolePage(isPresented: $showConfirmation) {
                 ActionConfirmationView(
                     title: confirmingStop ? "Stop this build?" : "Build \(game?.title ?? "this game")?",
                     message: confirmingStop ? "NXNative will stop preparing this game. You can start the build again later." : "MetalOS will prepare this game with NXNative. Build files will stay in this game’s folder.",

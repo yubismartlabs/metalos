@@ -70,7 +70,7 @@ enum NXBuildEnvironment {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
+            try AppProcessSupervisor.run(process)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0,

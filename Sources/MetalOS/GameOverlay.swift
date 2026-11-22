@@ -5,7 +5,7 @@ import Combine
 /// Determines ownership from an installed payload, never from the last activated app alone.
 struct OverlayApplicationPolicy {
     static func permitsQuit(source: GameSource) -> Bool {
-        [.native, .appStore, .nxnative].contains(source)
+        [.native, .appStore, .nxnative, .ps2].contains(source)
     }
     static func matches(installPath: String, bundleURL: URL?, executableURL: URL?, bundleIdentifier: String?) -> Bool {
         let managers = GameDiscovery.managerBundleIDs.union(["com.valvesoftware.steam", "com.heroicgameslauncher.hgl", "com.codeweavers.CrossOver", "com.apple.finder"])
@@ -19,16 +19,24 @@ struct OverlayApplicationPolicy {
 }
 
 private enum OverlayAction: String, Identifiable {
-    case resume, library, screenshot, console, favorite, quit
+    case resume, quickSave, quickLoad, performance, remap, capture, home, console, favorite
+    case bottomConfirms, rightConfirms, backToGuide
+
     var id: String { rawValue }
+
     var symbol: String {
         switch self {
         case .resume: "play.fill"
-        case .library: "square.grid.2x2.fill"
-        case .screenshot: "camera.fill"
+        case .quickSave: "arrow.down.to.line"
+        case .quickLoad: "arrow.up.to.line"
+        case .performance: "speedometer"
+        case .remap: "gamecontroller"
+        case .capture: "camera.fill"
+        case .home: "house"
         case .console: "terminal.fill"
         case .favorite: "heart.fill"
-        case .quit: "power"
+        case .bottomConfirms, .rightConfirms: "button.programmable"
+        case .backToGuide: "chevron.left"
         }
     }
 }
@@ -44,8 +52,17 @@ final class GameOverlayController: ObservableObject {
     @Published fileprivate var sessionStarted: Date?
     @Published fileprivate var sample: GameProcessSample?
     @Published fileprivate var showingConsole = false
+    @Published fileprivate var showingRemap = false
+    @Published fileprivate var hudEnabled = false
+    @Published fileprivate var frames: ConsoleFrameMetrics?
+    @Published fileprivate var busy = false
     private weak var store: LibraryStore?
     private var gameApplication: NSRunningApplication?
+    private var managedPID: pid_t?
+    private var hudPanel: NSPanel?
+    private var operation: Task<Void, Never>?
+    private var operationID: UUID?
+    private var playtimeStarted: TimeInterval?
     private var previousApplication: NSRunningApplication?
     private var panel: OverlayPanel?
     private var observers: [NSObjectProtocol] = []
@@ -66,27 +83,55 @@ final class GameOverlayController: ObservableObject {
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            Task { @MainActor in self?.observeActivation(app) }
+            Task { @MainActor in
+                self?.observeActivation(app)
+                self?.refreshHUD()
+            }
         })
         observers.append(center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             Task { @MainActor in
                 guard let self, self.gameApplication?.processIdentifier == app.processIdentifier else { return }
-                self.gameApplication = nil; self.game = nil; self.selection = 0; self.sessionStarted = nil
-                self.hide(restoreFocus: false)
-                GameFullScreenEnforcer.shared.endSession()
+                self.endSession()
             }
         })
     }
 
-    func beginSession(game: Game, application: NSRunningApplication?) {
+    func beginSession(game: Game, application: NSRunningApplication?, managedPID: pid_t? = nil) {
+        recordPlaytime()
+        resetSessionControls()
         hide(restoreFocus: false)
         self.game = game
+        self.managedPID = managedPID
         sessionStarted = Date()
         sampler.reset(); sample = nil
-        gameApplication = application.flatMap { matches($0, game: game) ? $0 : nil }
+        gameApplication = application.flatMap { app in
+            game.source == .ps2 || matches(app, game: game) ? app : nil
+        }
+        if managedPID != nil || gameApplication != nil { playtimeStarted = ProcessInfo.processInfo.systemUptime }
         message = nil
         GameFullScreenEnforcer.shared.beginSession(game: game, application: application)
+    }
+
+    func endSession() {
+        recordPlaytime()
+        resetSessionControls()
+        hide(restoreFocus: false)
+        gameApplication = nil
+        managedPID = nil
+        game = nil
+        sessionStarted = nil
+        sample = nil
+        selection = 0
+        GameFullScreenEnforcer.shared.endSession()
+    }
+
+    private func recordPlaytime() {
+        guard let playtimeStarted else { return }
+        self.playtimeStarted = nil
+        if let game {
+            store?.recordPlaytime(gameID: game.id, seconds: ProcessInfo.processInfo.systemUptime - playtimeStarted)
+        }
     }
 
     var canToggle: Bool {
@@ -102,9 +147,9 @@ final class GameOverlayController: ObservableObject {
 
     /// Also provides a preview when no game is running, without launching anything.
     func showFromLibrary() {
-        if let app = gameApplication, app.isTerminated { gameApplication = nil; game = nil }
+        if let app = gameApplication, app.isTerminated { endSession() }
         previousApplication = NSWorkspace.shared.frontmostApplication
-        selection = 0; message = nil; showingConsole = false
+        selection = 0; message = nil; showingConsole = false; showingRemap = false
         if panel == nil {
             let panel = OverlayPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isFloatingPanel = true
@@ -116,17 +161,13 @@ final class GameOverlayController: ObservableObject {
             panel.backgroundColor = .clear
             panel.hasShadow = false
             panel.contentView = NSHostingView(rootView: GameOverlayView(overlay: self).preferredColorScheme(.dark))
-            panel.command = { [weak self] in _ = self?.route($0) }
+            panel.command = { [weak self] in _ = self?.route($0, fromController: false) }
             self.panel = panel
         }
-        // Prefer the game's display; otherwise the display under the pointer.
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
-        guard let screen else { return }
-        let width = min(showingConsole ? 1180.0 : 1000.0, screen.visibleFrame.width - 64)
-        let height = showingConsole ? min(680.0, screen.visibleFrame.height - 64) : 300.0
-        let y = showingConsole ? screen.visibleFrame.midY - height / 2 : screen.visibleFrame.minY + 36
-        panel?.setFrame(NSRect(x: screen.frame.midX - width / 2, y: y, width: width, height: height), display: true)
+        guard let screen = targetScreen else { return }
+        positionGuide(on: screen)
         isVisible = true
+        hudPanel?.orderOut(nil)
         startSampling()
         panel?.alphaValue = ConsoleFeedback.shared.motionReduced ? 1 : 0
         panel?.orderFrontRegardless()
@@ -140,10 +181,11 @@ final class GameOverlayController: ObservableObject {
         if keyboardMonitor == nil {
             keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self, self.isVisible, event.window === self.panel else { return event }
-                let commands: [UInt16: String] = [123: "left", 124: "right", 125: "down", 126: "up", 36: "confirm", 49: "confirm", 53: "back", 1: "capture"]
+                let commands: [UInt16: String] = [123: "left", 124: "right", 125: "down", 126: "up", 36: "confirm", 49: "confirm", 76: "confirm", 53: "back", 1: "capture"]
                 guard let command = commands[event.keyCode] else { return event }
+                if event.isARepeat, ConsoleDirection(rawValue: command) == nil { return nil }
                 ConsoleFeedback.shared.respond(to: command)
-                self.route(command)
+                self.route(command, fromController: false)
                 return nil
             }
         }
@@ -152,127 +194,283 @@ final class GameOverlayController: ObservableObject {
     func hide(restoreFocus: Bool) {
         panel?.orderOut(nil); isVisible = false
         showingConsole = false
-        stopSampling()
+        showingRemap = false
+        if !hudEnabled { stopSampling() }
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor); self.keyboardMonitor = nil }
         if restoreFocus {
             let target = previousApplication?.isTerminated == false ? previousApplication : gameApplication
             target?.activate(options: [])
         }
+        refreshHUD()
     }
 
     @discardableResult
-    func route(_ command: String) -> Bool {
+    func route(_ raw: String, fromController: Bool = true) -> Bool {
         guard isVisible else { return false }
+        let command = fromController ? profile.map(raw) : raw
         if showingConsole {
             switch command {
             case "back", "menu": setConsoleVisible(false)
+            case "home": hide(restoreFocus: true)
             case "confirm": perform(.resume)
             default: break
             }
             return true
         }
+        if let direction = ConsoleDirection(rawValue: command),
+           let action = focusedAction, let next = guideGraph[action]?[direction] {
+            focus(next)
+            return true
+        }
         switch command {
-        case "back", "menu": hide(restoreFocus: true)
-        case "left", "previous", "up": selection = (selection - 1 + actions.count) % actions.count
-        case "right", "next", "down": selection = (selection + 1) % actions.count
-        case "confirm": perform(actions[min(selection, actions.count - 1)])
-        case "favorite": perform(.favorite)
-        case "details", "capture": perform(.screenshot)
+        case "home": hide(restoreFocus: true)
+        case "back", "menu":
+            if showingRemap { showRemap(false) } else { hide(restoreFocus: true) }
+        case "previous": focusStep(-1)
+        case "next": focusStep(1)
+        case "confirm":
+            if let action = focusedAction { perform(action) }
+        case "favorite" where !showingRemap: perform(.favorite)
+        case "details" where !showingRemap, "capture" where !showingRemap: perform(.capture)
         default: break
         }
         return true
     }
 
+    fileprivate var profile: ConsoleGuideProfile {
+        guard let id = game?.id else { return .southConfirm }
+        return store?.data.games.first(where: { $0.id == id })?.guideProfile ?? .southConfirm
+    }
+
+    private var runtime: ConsoleGameRuntime? {
+        game.flatMap { ConsoleGameRuntimes.shared.providers[$0.source] }
+    }
+
+    fileprivate var canQuickSave: Bool { runtime?.quickSave != nil }
+    fileprivate var canQuickLoad: Bool { runtime?.quickLoad != nil }
     fileprivate var actions: [OverlayAction] {
-        var actions: [OverlayAction] = [.resume, .library, .screenshot]
-        if canShowConsole { actions.append(.console) }
-        if game != nil { actions.append(.favorite) }
-        if canQuitGame { actions.append(.quit) }
+        if showingRemap { return [.bottomConfirms, .rightConfirms, .backToGuide] }
+        var actions: [OverlayAction] = [.resume, .performance, .capture]
+        if game != nil {
+            if canQuickSave { actions.append(.quickSave) }
+            if canQuickLoad { actions.append(.quickLoad) }
+            actions += [.remap, .favorite]
+        }
+        if store?.hasRunningNXNativeGame == true { actions.append(.console) }
+        actions.append(.home)
         return actions
     }
-    fileprivate var canShowConsole: Bool { store?.hasRunningNXNativeGame == true }
+    fileprivate var actionRows: [[OverlayAction]] {
+        stride(from: 0, to: actions.count, by: 3).map { Array(actions[$0..<min($0 + 3, actions.count)]) }
+    }
+    private var guideGraph: [OverlayAction: [ConsoleDirection: OverlayAction]] { consoleGridNeighbors(actionRows) }
+    fileprivate var focusedAction: OverlayAction? { actions.indices.contains(selection) ? actions[selection] : actions.first }
+
+    fileprivate func focus(_ action: OverlayAction) {
+        if let index = actions.firstIndex(of: action) { selection = index }
+    }
+
+    private func focusStep(_ delta: Int) {
+        selection = (min(selection, actions.count - 1) + delta + actions.count) % actions.count
+    }
+
     fileprivate var consoleLog: String { store?.gameConsoleLog ?? "" }
     fileprivate var isFavorite: Bool {
         guard let id = game?.id else { return false }
         return store?.data.games.first { $0.id == id }?.favorite ?? false
     }
+
     private var canQuitGame: Bool {
-        guard let game, OverlayApplicationPolicy.permitsQuit(source: game.source), let app = gameApplication, !app.isTerminated else { return false }
+        guard let game, OverlayApplicationPolicy.permitsQuit(source: game.source) else { return false }
+        if managedPID != nil { return store?.hasRunningNXNativeGame == true }
+        guard let app = gameApplication, !app.isTerminated else { return false }
         return matches(app, game: game)
     }
+
     fileprivate func title(for action: OverlayAction) -> String {
         switch action {
         case .resume: game == nil ? "Close" : "Resume"
-        case .library: "Library"
-        case .screenshot: "Capture"
-        case .console: "Console"
+        case .quickSave: "Quick Save"
+        case .quickLoad: "Quick Load"
+        case .performance: hudEnabled ? "Hide Performance HUD" : "Show Performance HUD"
+        case .remap: "Controller Remap"
+        case .capture: "Capture"
+        case .home: canQuitGame ? "Exit to Home" : "Home"
+        case .console: "Game Console"
         case .favorite: isFavorite ? "Favorited" : "Favorite"
-        case .quit: "Quit game"
+        case .bottomConfirms: ConsoleGuideProfile.southConfirm.title
+        case .rightConfirms: ConsoleGuideProfile.eastConfirm.title
+        case .backToGuide: "Back to Guide"
         }
     }
-    fileprivate func detail(for action: OverlayAction) -> String {
+
+    fileprivate func isSelected(_ action: OverlayAction) -> Bool {
         switch action {
-        case .resume: game == nil ? "Close the bar" : "Back to the game"
-        case .library: "Open MetalOS"
-        case .screenshot: "Save a screenshot"
-        case .console: "View live game output"
-        case .favorite: isFavorite ? "Remove favorite" : "Add to favorites"
-        case .quit: "End this game"
+        case .bottomConfirms: profile == .southConfirm
+        case .rightConfirms: profile == .eastConfirm
+        case .performance: hudEnabled
+        case .favorite: isFavorite
+        default: false
         }
     }
+
     fileprivate func perform(_ action: OverlayAction) {
+        guard !busy || action == .resume else { return }
         switch action {
         case .resume:
             if let app = gameApplication, !app.isTerminated {
                 hide(restoreFocus: false)
                 app.activate(options: [])
+                refreshHUD()
             } else { hide(restoreFocus: true) }
-        case .library:
+        case .home:
+            if canQuitGame, managedPID != nil {
+                store?.closeCurrentGame()
+            } else if canQuitGame, let app = gameApplication, !app.terminate() {
+                message = "The game did not accept the quit request."
+                return
+            }
             hide(restoreFocus: false)
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first { !($0 is NSPanel) && $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
-        case .screenshot:
+        case .capture:
             takeScreenshot()
-        case .console:
-            setConsoleVisible(true)
+        case .quickSave, .quickLoad:
+            guard let game, let perform = action == .quickSave ? runtime?.quickSave : runtime?.quickLoad else { return }
+            runOperation {
+                try await perform(game)
+                return action == .quickSave ? "State saved." : "State loaded."
+            }
+        case .performance:
+            guard game != nil else { message = "Launch a game to use the Performance HUD."; return }
+            hudEnabled.toggle()
+            message = hudEnabled ? "Performance HUD will appear when you resume." : "Performance HUD hidden."
+            refreshHUD()
+        case .remap: showRemap(true)
+        case .bottomConfirms, .rightConfirms:
+            if let id = game?.id {
+                store?.setGuideProfile(action == .bottomConfirms ? .southConfirm : .eastConfirm, gameID: id)
+                message = "Guide mapping saved."
+            }
+        case .backToGuide: showRemap(false)
+        case .console: setConsoleVisible(true)
         case .favorite:
             if let game { store?.favorite(game) }
-        case .quit:
-            guard canQuitGame, let app = gameApplication else { return }
-            if app.terminate() { hide(restoreFocus: false) }
-            else { message = "The game did not accept the quit request. Close it from its own menu." }
         }
     }
+
+    private func showRemap(_ visible: Bool) {
+        showingRemap = visible
+        focus(visible ? (profile == .southConfirm ? .bottomConfirms : .rightConfirms) : .remap)
+    }
+
     private func setConsoleVisible(_ visible: Bool) {
         showingConsole = visible
-        guard isVisible, let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }) ?? NSScreen.main,
-              let panel else { return }
-        let width = min(visible ? 1180.0 : 1000.0, screen.visibleFrame.width - 64)
-        let height = visible ? min(680.0, screen.visibleFrame.height - 64) : 300.0
-        let y = visible ? screen.visibleFrame.midY - height / 2 : screen.visibleFrame.minY + 36
-        panel.setFrame(NSRect(x: screen.frame.midX - width / 2, y: y, width: width, height: height), display: true)
+        if isVisible, let screen = panel?.screen ?? targetScreen { positionGuide(on: screen) }
     }
+
+    private var targetScreen: NSScreen? {
+        if let pid = gameApplication?.processIdentifier ?? managedPID,
+           let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]],
+           let mainDisplay = NSScreen.screens.first,
+           let window = windows.first(where: {
+               $0[kCGWindowOwnerPID as String] as? Int32 == pid && $0[kCGWindowLayer as String] as? Int == 0
+           }),
+           let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
+           let x = bounds["X"], let y = bounds["Y"], let w = bounds["Width"], let h = bounds["Height"] {
+            let center = CGPoint(x: x + w / 2, y: mainDisplay.frame.maxY - y - h / 2)
+            if let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) { return screen }
+        }
+        return NSApp.keyWindow?.screen
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+    }
+
+    private func positionGuide(on screen: NSScreen) {
+        let area = screen.visibleFrame
+        let width = min(showingConsole ? 1180.0 : 1000.0, area.width - 48)
+        let height = min(showingConsole ? 680.0 : 520.0, area.height - 48)
+        let y = showingConsole ? area.midY - height / 2 : area.minY + 24
+        panel?.setFrame(NSRect(x: area.midX - width / 2, y: y, width: width, height: height), display: true)
+    }
+
     private func takeScreenshot() {
         guard GameBarCapture.isPermitted else {
             GameBarCapture.requestAccess()
-            message = "Allow MetalOS under System Settings → Privacy & Security → Screen Recording, then relaunch to save screenshots."
+            message = "Allow Screen Recording for MetalOS in macOS Settings to capture screenshots."
             return
         }
         panel?.orderOut(nil)
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            let result = await GameBarCapture.capture()
-            guard let self else { return }
-            switch result {
-            case .success: self.message = "Screenshot saved to Pictures/MetalOS."
-            case .failure: self.message = "Could not save the screenshot."
-            }
-            if self.isVisible {
-                self.panel?.orderFrontRegardless()
-                self.panel?.makeKey()
+        hudPanel?.orderOut(nil)
+        runOperation(restorePanel: true) {
+            try await Task.sleep(for: .milliseconds(250))
+            _ = try await GameBarCapture.capture().get()
+            return "Screenshot saved to Pictures/MetalOS."
+        }
+    }
+
+    private func runOperation(restorePanel: Bool = false, _ action: @escaping @MainActor () async throws -> String) {
+        guard !busy else { return }
+        let id = UUID()
+        operationID = id
+        busy = true
+        operation = Task { @MainActor [weak self] in
+            let result: String
+            do { result = try await action() }
+            catch { result = error.localizedDescription }
+            guard let self, operationID == id else { return }
+            busy = false
+            operation = nil
+            operationID = nil
+            if isVisible {
+                message = result
+                if restorePanel {
+                    panel?.orderFrontRegardless()
+                    panel?.makeKey()
+                }
+            } else {
+                refreshHUD()
             }
         }
     }
+
+    private func resetSessionControls() {
+        hudEnabled = false
+        hudPanel?.orderOut(nil)
+        operation?.cancel()
+        operation = nil
+        operationID = nil
+        busy = false
+    }
+
+    private func refreshHUD() {
+        guard hudEnabled, !isVisible, !busy, let game,
+              let front = NSWorkspace.shared.frontmostApplication,
+              matches(front, game: game), let screen = targetScreen else {
+            hudPanel?.orderOut(nil)
+            if !isVisible { stopSampling() }
+            return
+        }
+        let hud = hudPanel ?? makeHUDPanel()
+        let area = screen.visibleFrame
+        hud.setFrame(NSRect(x: area.maxX - 342, y: area.maxY - 162, width: 316, height: 138), display: true)
+        if sampleTimer == nil { startSampling() }
+        hud.orderFrontRegardless()
+    }
+
+    private func makeHUDPanel() -> NSPanel {
+        let hud = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        hud.level = .floating
+        hud.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        hud.hidesOnDeactivate = false
+        hud.isOpaque = false
+        hud.backgroundColor = .clear
+        hud.ignoresMouseEvents = true
+        hud.contentView = NSHostingView(rootView: GuidePerformanceView(overlay: self).preferredColorScheme(.dark))
+        hudPanel = hud
+        return hud
+    }
+
     private func startSampling() {
         sampler.reset(); sample = nil
         updateSample()
@@ -283,18 +481,23 @@ final class GameOverlayController: ObservableObject {
     }
     private func stopSampling() {
         sampleTimer?.invalidate(); sampleTimer = nil
-        sampler.reset(); sample = nil
+        sampler.reset(); sample = nil; frames = nil
     }
     private func updateSample() {
-        guard let pid = gameApplication?.processIdentifier else { sample = nil; return }
-        sample = sampler.sample(pid: pid)
+        if let pid = gameApplication?.processIdentifier ?? managedPID { sample = sampler.sample(pid: pid) }
+        else { sample = nil }
+        frames = game.flatMap { runtime?.frames?($0) }
     }
     private func observeActivation(_ app: NSRunningApplication) {
         guard let game, matches(app, game: game) else { return }
         gameApplication = app
+        if playtimeStarted == nil { playtimeStarted = ProcessInfo.processInfo.systemUptime }
     }
     private func matches(_ app: NSRunningApplication, game: Game) -> Bool {
         guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier, !app.isTerminated else { return false }
+        if game.source == .ps2 {
+            return gameApplication?.processIdentifier == app.processIdentifier
+        }
         return OverlayApplicationPolicy.matches(installPath: game.installPath, bundleURL: app.bundleURL, executableURL: app.executableURL, bundleIdentifier: app.bundleIdentifier)
     }
 }
@@ -320,135 +523,156 @@ private final class OverlayPanel: NSPanel {
 private struct GameOverlayView: View {
     @ObservedObject var overlay: GameOverlayController
     @ObservedObject private var appearance = StudioAppearance.shared
+    @FocusState private var focused: OverlayAction?
+
     var body: some View {
-        VStack(spacing: 14) {
-            if overlay.showingConsole {
-                consoleHeader
-                consoleOutput
-                HStack {
-                    Text("B / Esc  Back to Game Bar     A / Enter  Resume Game")
-                    Spacer()
-                    Text("LIVE NXNATIVE OUTPUT").foregroundStyle(studioAccent)
-                }.font(.system(size: 10)).foregroundStyle(.secondary)
-            } else {
+        ConsoleCard(cornerRadius: ConsoleDesign.Radius.overlay, padding: 22) {
+            VStack(alignment: .leading, spacing: 12) {
                 header
-                HStack(alignment: .top, spacing: 12) {
-                    performance
-                    ForEach(Array(overlay.actions.enumerated()), id: \.element.id) { index, action in
-                        actionTile(action, selected: overlay.selection == index)
+                if overlay.showingConsole {
+                    consoleOutput
+                    HStack {
+                        Button("Back to Guide") { _ = overlay.route("back", fromController: false) }
+                        Button("Resume") { overlay.perform(.resume) }
+                    }
+                    .font(ConsoleDesign.Typography.action)
+                    .buttonStyle(.bordered)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if overlay.showingRemap {
+                                    Text("Choose which face button confirms in the MetalOS Guide.")
+                                        .font(ConsoleDesign.Typography.metadata)
+                                } else {
+                                    guideSummary
+                                }
+                                ForEach(Array(overlay.actionRows.enumerated()), id: \.offset) { _, row in
+                                    HStack(spacing: 12) {
+                                        ForEach(row) { action in actionTile(action).id(action) }
+                                    }
+                                }
+                            }
+                            .padding(8)
+                        }
+                        .scrollIndicators(.hidden)
+                        .onChange(of: overlay.focusedAction) { _, action in
+                            guard let action else { return }
+                            focused = action
+                            withAnimation(ConsoleFeedback.shared.pageAnimation) { proxy.scrollTo(action) }
+                        }
                     }
                 }
                 footer
             }
-        }.padding(20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 27, style: .continuous))
-            .background(studioBackground.opacity(0.86), in: RoundedRectangle(cornerRadius: 27, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 27, style: .continuous).fill(LinearGradient(colors: [studioAccent.opacity(0.10), .white.opacity(0.025), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)))
-            .overlay(RoundedRectangle(cornerRadius: 27, style: .continuous).strokeBorder(LinearGradient(colors: [.white.opacity(0.24), studioAccent.opacity(0.13), .white.opacity(0.055)], startPoint: .topLeading, endPoint: .bottomTrailing)))
-            .padding(12)
-            .consoleMotion()
-            .environment(\.consoleOverlayFocus, true)
-            .animation(ConsoleFeedback.shared.focusAnimation, value: overlay.selection)
-            .onExitCommand { overlay.hide(restoreFocus: true) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(10)
+        .consoleMotion()
+        .animation(ConsoleFeedback.shared.pageAnimation, value: overlay.showingRemap)
+        .onChange(of: overlay.isVisible) { _, visible in
+            focused = visible ? overlay.focusedAction : nil
+        }
+        .onChange(of: overlay.showingConsole) { _, showing in
+            if !showing { focused = overlay.focusedAction }
+        }
+        .onChange(of: focused) { _, action in if let action { overlay.focus(action) } }
+        .onExitCommand { _ = overlay.route("back", fromController: false) }
     }
 
     private var header: some View {
         HStack(spacing: 14) {
-            Image(systemName: "gamecontroller.fill").font(.system(size: 21)).foregroundStyle(studioAccent)
-                .frame(width: 44, height: 44)
-                .background(studioAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("GAME BAR").font(.system(size: 9, weight: .bold)).tracking(3).foregroundStyle(studioAccent)
-                Text(overlay.game?.title ?? "No game running").font(.system(size: 20, weight: .semibold)).lineLimit(1)
+            Image(systemName: overlay.showingConsole ? "terminal.fill" : "gamecontroller.fill")
+                .font(.system(size: 24)).foregroundStyle(appearance.accent)
+                .frame(width: 50, height: 50)
+                .background(appearance.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(overlay.showingConsole ? "Game Console" : overlay.showingRemap ? "Controller Remap" : "Guide")
+                    .font(ConsoleDesign.Typography.heading)
+                    .accessibilityAddTraits(.isHeader)
+                if let title = overlay.game?.title {
+                    Text(title).font(ConsoleDesign.Typography.metadata)
+                        .foregroundStyle(ConsoleDesign.Palette.secondaryText).lineLimit(1)
+                }
             }
             Spacer(minLength: 12)
-            if overlay.game != nil, let started = overlay.sessionStarted {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text("SESSION").font(.system(size: 8, weight: .bold)).tracking(2).foregroundStyle(.secondary)
-                        Text(GameBarFormatting.duration(context.date.timeIntervalSince(started)))
-                            .font(.system(size: 14, weight: .medium).monospacedDigit()).foregroundStyle(.white.opacity(0.85))
-                    }
+            if let started = overlay.sessionStarted {
+                TimelineView(.periodic(from: .now, by: 1)) { tick in
+                    Text(GameBarFormatting.duration(tick.date.timeIntervalSince(started)))
+                        .font(ConsoleDesign.Typography.metadata)
+                        .accessibilityLabel("Session duration")
                 }
             }
-            VStack(alignment: .trailing, spacing: 4) {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    Text(context.date, style: .time).font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
-                }
-                ControllerBatteryBadge()
-            }
+            ControllerBatteryBadge()
         }
     }
 
-    private var performance: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "speedometer").font(.system(size: 10))
-                Text("PERFORMANCE").font(.system(size: 9, weight: .bold)).tracking(2)
-            }.foregroundStyle(studioAccent)
-            HStack(spacing: 20) {
-                metric("CPU", GameBarFormatting.cpu(overlay.sample?.cpuPercent))
-                metric("MEMORY", GameBarFormatting.memory(overlay.sample?.memoryBytes))
-            }
-            Spacer(minLength: 0)
-            Text(overlay.game == nil ? "Launch a game to read its process." : overlay.sample == nil ? "Waiting for the game process…" : "Reads the game process only.")
-                .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
-        }.padding(14)
-            .frame(width: 210, alignment: .leading)
-            .frame(maxHeight: .infinity, alignment: .topLeading)
-            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 15))
-            .overlay(RoundedRectangle(cornerRadius: 15).stroke(.white.opacity(0.07)))
-    }
-
-    private func metric(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.system(size: 8, weight: .semibold)).tracking(1.5).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 18, weight: .semibold).monospacedDigit()).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
-        }
-    }
-
-    private func actionTile(_ action: OverlayAction, selected: Bool) -> some View {
-        Button { overlay.perform(action) } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: action.symbol).font(.system(size: 20, weight: .medium))
-                    Spacer()
-                    if action == .favorite && overlay.isFavorite {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 11))
-                    }
+    private var guideSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if overlay.game != nil {
+                HStack(spacing: 18) {
+                    Text("CPU  \(GameBarFormatting.cpu(overlay.sample?.cpuPercent))")
+                    Text("Memory  \(GameBarFormatting.memory(overlay.sample?.memoryBytes))")
                 }
+                if !overlay.canQuickSave || !overlay.canQuickLoad {
+                    let unavailable = !overlay.canQuickSave && !overlay.canQuickLoad ? "Quick Save and Load"
+                        : !overlay.canQuickSave ? "Quick Save" : "Quick Load"
+                    Text("\(unavailable) are managed by this game or its runtime.")
+                }
+            }
+        }
+        .font(ConsoleDesign.Typography.metadata)
+        .foregroundStyle(ConsoleDesign.Palette.secondaryText)
+    }
+
+    private func actionTile(_ action: OverlayAction) -> some View {
+        FocusableButton(id: action, focus: $focused, accent: appearance.accent, horizontalPadding: 14,
+                        prominent: action == .resume, action: { overlay.perform(action) }) {
+            HStack(spacing: 10) {
+                Image(systemName: action.symbol).accessibilityHidden(true)
+                Text(overlay.title(for: action))
+                    .font(.system(size: 17, weight: .semibold))
+                    .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
-                Text(overlay.title(for: action)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(overlay.detail(for: action)).font(.system(size: 9)).lineLimit(1).opacity(0.6)
-            }.padding(13)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: 116)
-                .foregroundStyle(selected ? studioBackground : .white.opacity(0.85))
-                .background(selected ? studioAccent : Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 15))
-                .overlay(RoundedRectangle(cornerRadius: 15).stroke(selected ? Color.clear : .white.opacity(0.07)))
-        }.buttonStyle(ConsoleButtonStyle()).consoleFocus(selected, cornerRadius: 15, scale: 1.025)
+                if overlay.isSelected(action) {
+                    Image(systemName: "checkmark.circle.fill").accessibilityHidden(true)
+                }
+            }
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        }
+        .accessibilityAddTraits(overlay.isSelected(action) ? [.isSelected] : [])
     }
 
     private var footer: some View {
-        HStack {
-            Text(overlay.message ?? "← → Select    A / Return Confirm    X / S Capture    B / Esc Resume")
-            Spacer()
-            Text("LB + RB + Menu").foregroundStyle(studioAccent)
-        }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-    }
-
-    private var consoleHeader: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "terminal.fill").font(.system(size: 18)).foregroundStyle(studioAccent)
-                .frame(width: 38, height: 38).background(studioAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("GAME CONSOLE").font(.system(size: 9, weight: .bold)).tracking(3).foregroundStyle(studioAccent)
-                Text(overlay.game?.title ?? "NXNative output").font(.system(size: 17, weight: .semibold)).lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            if let message = overlay.message {
+                Text(message).font(ConsoleDesign.Typography.metadata).lineLimit(2)
             }
-            Spacer()
-            Text("host.log").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+            HStack(spacing: 18) {
+                HStack(spacing: 6) {
+                    ConsolePromptGlyph(control: overlay.profile.confirmGlyph, fallbackLabel: "↵")
+                    Text(overlay.showingConsole ? "Resume" : "Select")
+                }
+                HStack(spacing: 6) {
+                    ConsolePromptGlyph(control: overlay.profile.backGlyph, fallbackLabel: "Esc")
+                    Text(overlay.showingRemap || overlay.showingConsole ? "Back" : "Resume")
+                }
+                if !overlay.showingRemap && !overlay.showingConsole {
+                    HStack(spacing: 6) {
+                        ConsolePromptGlyph(control: .details, fallbackLabel: "S")
+                        Text("Capture")
+                    }
+                }
+                Spacer()
+                if overlay.busy { ProgressView().controlSize(.small) }
+            }
+            .font(.system(size: 16, weight: .medium))
         }
+        .foregroundStyle(ConsoleDesign.Palette.secondaryText)
+        .padding(.top, 8)
+        .overlay(alignment: .top) { Rectangle().fill(ConsoleDesign.Palette.border).frame(height: 1) }
     }
 
     private var consoleLines: [String] {
@@ -491,5 +715,35 @@ private struct GameOverlayView: View {
         let count = consoleLines.count
         guard count > 0 else { return }
         DispatchQueue.main.async { proxy.scrollTo(count - 1, anchor: .bottom) }
+    }
+}
+
+private struct GuidePerformanceView: View {
+    @ObservedObject var overlay: GameOverlayController
+    @ObservedObject private var preferences = ConsolePreferences.shared
+
+    var body: some View {
+        ConsoleCard(cornerRadius: 18, padding: 13) {
+            VStack(alignment: .leading, spacing: 9) {
+                Label("Performance", systemImage: "speedometer")
+                    .font(.system(size: 17, weight: .semibold))
+                Text("CPU \(GameBarFormatting.cpu(overlay.sample?.cpuPercent))  ·  RAM \(GameBarFormatting.memory(overlay.sample?.memoryBytes))")
+                if preferences.verboseHUD, let frames = overlay.frames {
+                    Text(metric(frames.framesPerSecond, suffix: " fps")
+                         + "  ·  " + metric(frames.frameIntervalMilliseconds, suffix: " ms/frame"))
+                    Text("Metal GPU  " + metric(frames.gpuMilliseconds, suffix: " ms"))
+                } else if preferences.verboseHUD {
+                    Text("Frame and Metal metrics unavailable")
+                        .foregroundStyle(ConsoleDesign.Palette.secondaryText)
+                }
+            }
+            .font(.system(size: 13, weight: .medium, design: .monospaced))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }
+    }
+
+    private func metric(_ value: Double?, suffix: String) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "—" }
+        return value.formatted(.number.precision(.fractionLength(1))) + suffix
     }
 }

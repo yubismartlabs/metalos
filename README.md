@@ -23,7 +23,7 @@ The app is unsigned for distribution (ad-hoc signing only). Developer ID signing
 
 ## First launch and NXNative
 
-On first launch, MetalOS opens a full-screen setup page. Choose the folder that will hold your Switch game folders and MetalOS data. The app creates `.nxstudio/` there for its library, artwork, and installed engines. The setup is one-time; open the selected folder later in **Settings → Library Folder**.
+On first launch, MetalOS opens a full-screen setup page. Choose the folder that will hold your Switch game folders and MetalOS data. The app creates `.nxstudio/` there for its library, artwork, and installed engines. PS2 disc images may stay anywhere and are added by reference. The setup is one-time; open the selected folder later in **Settings → Library Folder**.
 
 In **Settings → Engine**, install the [Yubismartlabs NXNative fork](https://github.com/yubismartlabs/nxnative) or choose an existing custom checkout. MetalOS checks the current requirements and shows which ones are ready. If it can install missing tools and Python packages with Homebrew, it asks before doing so. Requirements that need manual setup, such as Xcode or Homebrew itself, are explained there. The managed engine and Python environment live under `<library>/.nxstudio/Engines/`.
 
@@ -54,9 +54,17 @@ After scanning or importing, MetalOS downloads the [Yubismartlabs NXNative games
 
 Extraction, build caches, logs, and the playable host stay under each game's hidden `.nxstudio` folder. NXNative reads the base game, update, and DLC containers together from the game folder. Generated folders and app contents are excluded from discovery.
 
+## PlayStation 2 games
+
+MetalOS launches PS2 games through [ARMSX2](https://github.com/ARMSX2/ARMSX2), an actively maintained PCSX2 fork with native Apple Silicon recompilers. Open **Settings → PlayStation 2** to install or update the official macOS arm64 nightly in `<library>/.nxstudio/Engines/ARMSX2/`. The nightly is unsigned, so macOS may ask you to approve it in **System Settings → Privacy & Security** on first launch. Intel Macs are not supported by this managed runtime.
+
+Choose **Add a PlayStation 2 game** and select a disc image. MetalOS keeps the image at its current path and derives the game title from its filename. ISO, CHD, CSO, ZSO, CUE/BIN, MDF, and NRG images are recognized. Images found inside the selected library folder are also discovered when you scan; scans skip hidden folders and app bundles.
+
+Open ARMSX2 setup from **Settings → PlayStation 2** on first use and configure a BIOS dumped from your own PlayStation 2. ARMSX2 manages BIOS settings, controller mapping, memory cards, and saves. MetalOS does not download or include game images or BIOS files.
+
 ## Discovery
 
-MetalOS scans only the chosen game library for Switch game folders. It does not scan Steam or Heroic, mounted volumes, or the Mac for app bundles. Add a Switch game folder or a macOS `.app` explicitly with the **+** button. App bundles remain available under **Apps**; Switch games appear under **Games**. Scans inspect each immediate game folder and skip symlinks.
+MetalOS scans only the chosen game library for Switch game folders and PS2 disc images. It does not scan Steam or Heroic, mounted volumes, or the Mac for app bundles. Add a game image or a macOS `.app` explicitly with the **+** button. App bundles remain available under **Apps**; games appear under **Games**. Switch scans inspect each immediate game folder; PS2 scans inspect folders recursively to a bounded depth. Symlinks are skipped.
 
 ## Artwork
 

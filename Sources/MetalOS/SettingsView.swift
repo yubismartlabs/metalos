@@ -10,6 +10,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case notifications = "Notifications"
     case capturesAndBroadcasts = "Captures and Broadcasts"
     case accessories = "Accessories"
+    case playStation2 = "PlayStation 2"
     case usersGuide = "Users Guide"
 
     var id: Self { self }
@@ -25,6 +26,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .notifications: "bell"
         case .capturesAndBroadcasts: "record.circle"
         case .accessories: "gamecontroller"
+        case .playStation2: "opticaldisc"
         case .usersGuide: "book.closed"
         }
     }
@@ -35,9 +37,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .storage: "Check available console space, manage games, and choose an installation location."
         case .sound: "Adjust the volume of console sound effects."
         case .screenAndVideo: "Configure resolution and other video settings."
+        case .notifications: "Review recent activity and choose when MetalOS can send desktop alerts."
         case .accessibility: "Enable screen zoom, screen reader, closed captions, custom button assignments, and menu navigation haptics."
         case .capturesAndBroadcasts: "Set screenshot and video resolutions, and customize Create button shortcuts."
         case .accessories: "Customize gamepads and test controller inputs."
+        case .playStation2: "Install and configure the ARMSX2 PlayStation 2 emulator."
         default: nil
         }
     }
@@ -322,6 +326,7 @@ struct SettingsView: View {
 private struct SettingsSectionPage: View {
     let section: SettingsSection
     var openSystemItem: (SystemMenuItem) -> Void
+    @EnvironmentObject private var store: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var appearance = StudioAppearance.shared
     @ObservedObject private var feedback = ConsoleFeedback.shared
@@ -334,6 +339,12 @@ private struct SettingsSectionPage: View {
             SystemMenuPage(openSystemItem: openSystemItem)
         } else if section == .network {
             NetworkSettingsPage()
+        } else if section == .screenAndVideo {
+            WallpaperSettingsPage()
+        } else if section == .notifications {
+            NotificationSettingsPage()
+        } else if section == .playStation2 {
+            PS2RuntimeSettingsPage()
         } else {
             settingsPlaceholder
         }
@@ -400,8 +411,8 @@ private struct SettingsSectionPage: View {
         .padding(.top, 27)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(appearance.background.ignoresSafeArea())
-        .consoleSheet(isPresented: $showControllerSettings) { ControllerStatusView() }
-        .consoleSheet(isPresented: $showGamepadTester) { GamepadTesterView() }
+        .consolePage(isPresented: $showControllerSettings) { ControllerStatusView() }
+        .consolePage(isPresented: $showGamepadTester) { GamepadTesterView() }
         .consoleInput(onCommand: navigate)
     }
 

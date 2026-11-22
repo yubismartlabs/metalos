@@ -8,7 +8,15 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var setupComplete = false
     @Published private(set) var workspacePath = ""
     @Published var isScanning = false
-    @Published var notice: String?
+    @Published private(set) var isMaintainingRuntimes = false
+    @Published var notice: String? {
+        didSet {
+            guard let notice, notice != oldValue else { return }
+            let isError = notice.localizedCaseInsensitiveContains("could not") || notice.localizedCaseInsensitiveContains("failed") || notice.localizedCaseInsensitiveContains("unavailable")
+            notificationCenter.post(isError ? "Action failed" : "Needs attention", notice,
+                                    category: .system, level: isError ? .error : .warning)
+        }
+    }
     @Published var scanWarnings: [String] = []
     @Published var source: GameSource = .all
     @Published var query = ""
@@ -24,6 +32,7 @@ final class LibraryStore: ObservableObject {
     var openBuildAfterImport = false
     @Published var favoritesOnly = false
     let builder = NXBuildService()
+    let notificationCenter = MetalOSNotificationCenter.shared
     let artworkCredentials = ArtworkCredentialStore()
     private var switchArtworkAPI: SwitchArtworkAPI
     private let gameDBAPI = GameDBAPI()
@@ -38,12 +47,15 @@ final class LibraryStore: ObservableObject {
     private var canSave = true
     private var launchAfterBuildID: String?
     private var gameProcess: Process?
+    private var activeWindowsBottleProcessGroup: pid_t?
+    private var activeExternalGameApplication: NSRunningApplication?
     private var gameRunLog: FileHandle?
     private var gameConsoleLogReader: FileHandle?
     private var gameConsoleLogTimer: Timer?
     private var gameConsoleLogURL: URL?
     @Published private(set) var gameConsoleLog = ""
     private var buildObservation: AnyCancellable?
+    private var buildNotificationObservation: AnyCancellable?
     private var volumeObservers: [NSObjectProtocol] = []
     private static let workspaceDefaultsKey = "NXStudio.workspacePath"
     private static let setupDefaultsKey = "NXStudio.setupComplete"
@@ -53,11 +65,17 @@ final class LibraryStore: ObservableObject {
             $0.isGame != showingApps &&
             (source == .all || $0.source == source) && (!favoritesOnly || $0.favorite) &&
             (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query))
-        }.sorted {
-            if $0.favorite != $1.favorite { return $0.favorite }
-            if $0.lastPlayed != $1.lastPlayed { return ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
-            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }.sorted(by: Self.gameOrder)
+    }
+    var consoleGames: [Game] {
+        data.games.filter(\.isGame).sorted(by: Self.gameOrder)
+    }
+    private static func gameOrder(_ lhs: Game, _ rhs: Game) -> Bool {
+        if lhs.favorite != rhs.favorite { return lhs.favorite }
+        if lhs.lastPlayed != rhs.lastPlayed {
+            return (lhs.lastPlayed ?? .distantPast) > (rhs.lastPlayed ?? .distantPast)
         }
+        return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
     }
     var selected: Game? { visibleGames.first { $0.id == selectedID } ?? visibleGames.first }
     var canFetchArtwork: Bool { !data.games.isEmpty }
@@ -145,6 +163,9 @@ final class LibraryStore: ObservableObject {
             }
         }
         buildObservation = builder.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        buildNotificationObservation = builder.$status.dropFirst().removeDuplicates().sink { [weak self] status in
+            Task { @MainActor in self?.recordBuildNotification(status) }
+        }
         console = data.settings.startInConsole
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             volumeObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -162,6 +183,34 @@ final class LibraryStore: ObservableObject {
             try FileManager.default.createDirectory(at: storage.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(data).write(to: storage, options: .atomic)
         } catch { notice = "Could not save library: \(error.localizedDescription)" }
+    }
+    func recordPlaytime(gameID: String, seconds: TimeInterval) {
+        guard seconds.isFinite, seconds >= 1,
+              let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].playedSeconds = (data.games[index].playedSeconds ?? 0) + seconds
+        save()
+    }
+    func setGuideProfile(_ profile: ConsoleGuideProfile, gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].guideProfile = profile == .southConfirm ? nil : profile
+        save()
+    }
+    func setMetalHUD(_ enabled: Bool, gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].metalHUDEnabled = enabled
+        save()
+    }
+    private func recordBuildNotification(_ status: String) {
+        let title = data.games.first(where: { $0.id == builder.currentGameID })?.title ?? "Game"
+        if status.hasPrefix("Build complete") {
+            notificationCenter.post("Build complete", "\(title) is ready to play.", category: .builds, level: .success)
+        } else if status.hasPrefix("Build failed") || status.hasPrefix("Build could not start") {
+            notificationCenter.post("Build failed", "\(title): \(builder.progressDetail)", category: .builds, level: .error)
+        } else if status.hasPrefix("Build finished, but") {
+            notificationCenter.post("Build needs attention", "\(title): \(builder.progressDetail)", category: .builds, level: .warning)
+        } else if status == "Build cancelled" {
+            notificationCenter.post("Build cancelled", "The build for \(title) was stopped.", category: .builds, level: .warning)
+        }
     }
     func completeInitialSetup(at selectedFolder: URL) {
         let workspace = selectedFolder.standardizedFileURL.resolvingSymlinksInPath()
@@ -197,6 +246,7 @@ final class LibraryStore: ObservableObject {
             UserDefaults.standard.set(true, forKey: Self.setupDefaultsKey)
             save()
             setupComplete = true
+            notificationCenter.post("MetalOS is set up", "Your library is ready at \(workspace.lastPathComponent).", category: .system, level: .success)
         } catch {
             notice = "Could not set up this folder: \(error.localizedDescription)"
         }
@@ -204,7 +254,8 @@ final class LibraryStore: ObservableObject {
     func scan() async {
         guard !isScanning else { return }
         isScanning = true
-        let roots = workspacePath.isEmpty ? data.settings.scanRoots : [workspacePath]
+        let previousGameIDs = Set(data.games.map(\.id))
+        let roots = Set(data.settings.scanRoots + (workspacePath.isEmpty ? [] : [workspacePath])).sorted()
         let result = await GameDiscovery().scan(roots: roots)
         var discovered = result.games
         if let workspaceURL {
@@ -215,6 +266,15 @@ final class LibraryStore: ObservableObject {
         }
         mergeDiscoveredGames(discovered)
         scanWarnings = result.warnings
+        let newGames = data.games.filter { !previousGameIDs.contains($0.id) }
+        if !newGames.isEmpty {
+            let sample = newGames.prefix(3).map(\.title).joined(separator: ", ")
+            let remainder = newGames.count > 3 ? " and \(newGames.count - 3) more" : ""
+            notificationCenter.post("Library scan found games", "Added \(newGames.count): \(sample)\(remainder).", category: .library, level: .success)
+        }
+        if !result.warnings.isEmpty {
+            notificationCenter.post("Library scan needs attention", result.warnings.prefix(3).joined(separator: " "), category: .library, level: .warning)
+        }
         await checkNXSupport()
         isScanning = false
         save()
@@ -314,13 +374,36 @@ final class LibraryStore: ObservableObject {
         data.games[index].windowsGraphicsBackendUserSet = true
         save()
     }
-    func setWindowsCompatibilityRuntime(_ runtime: WindowsCompatibilityRuntime, for gameID: String) {
+    func effectiveWindowsRuntime(for game: Game) -> WindowsCompatibilityRuntime {
+        game.windowsCompatibilityRuntime ?? data.settings.defaultWindowsRuntime ?? .managedWine
+    }
+    func setWindowsCompatibilityRuntime(_ runtime: WindowsCompatibilityRuntime?, for gameID: String) {
         guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
-        data.games[index].windowsCompatibilityRuntime = runtime == .managedWine ? nil : runtime
+        data.games[index].windowsCompatibilityRuntime = runtime
         save()
     }
+    func beginRuntimeMaintenance() -> Bool {
+        guard !isMaintainingRuntimes, !builder.isBuilding, GameOverlayController.shared.game == nil else {
+            notice = "Finish the active game, build, or runtime update before updating runtimes."
+            return false
+        }
+        isMaintainingRuntimes = true
+        return true
+    }
+    func endRuntimeMaintenance() {
+        isMaintainingRuntimes = false
+    }
     func launch(_ game: Game) {
+        guard !isMaintainingRuntimes else {
+            notice = "Wait for runtime maintenance to finish before launching a game."
+            return
+        }
         guard game.isAvailable else { notice = "This game is unavailable. Connect its drive or check its installation path."; return }
+        if game.windowsBottlePath != nil && game.windowsExecutablePath == nil {
+            notice = "This Lutris bottle is ready. Install your game, then choose its executable from the game details page."
+            return
+        }
+        notificationCenter.post("Launching game", "Opening \(game.title).", category: .games)
         if let provider = game.windowsStoreProvider, let storeID = game.windowsStoreGameID {
             launchWindowsStoreGame(game, provider: provider, gameID: storeID)
             return
@@ -345,28 +428,64 @@ final class LibraryStore: ObservableObject {
             launchBuiltGame(game, configuration: configuration)
             return
         }
+        if game.source == .ps2 {
+            launchPS2Game(game)
+            return
+        }
         guard !game.launchURL.isEmpty, let url = URL(string: game.launchURL) else {
             if game.source == .nxnative { startBuild(gameID: game.id, launchWhenComplete: true) }
             else { selectedID = game.id; showBuild = true }
             return
         }
+        closeCurrentGame()
         NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] application, error in
             Task { @MainActor in
                 guard let self else { return }
                 if let error { self.notice = "Could not launch \(game.title): \(error.localizedDescription)" }
                 else if let i = self.data.games.firstIndex(where: { $0.id == game.id }) {
                     self.data.games[i].lastPlayed = Date(); self.save()
+                    self.activeExternalGameApplication = application
                     GameOverlayController.shared.beginSession(game: self.data.games[i], application: application)
+                    self.notificationCenter.post("Game launched", "\(game.title) is running.", category: .games, level: .success)
                 }
             }
         }
+    }
+    func closeCurrentGame() {
+        if let group = activeWindowsBottleProcessGroup {
+            AppProcessSupervisor.terminate(groupID: group)
+            activeWindowsBottleProcessGroup = nil
+        }
+        if let process = gameProcess, process.isRunning {
+            AppProcessSupervisor.terminate(groupID: process.processIdentifier)
+        }
+        gameProcess = nil
+        try? gameRunLog?.close()
+        gameRunLog = nil
+        finishGameConsoleLog()
+
+        if let application = activeExternalGameApplication,
+           application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+           !application.isTerminated {
+            application.terminate()
+            for _ in 0..<10 where !application.isTerminated {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if !application.isTerminated { application.forceTerminate() }
+        }
+        activeExternalGameApplication = nil
+        GameOverlayController.shared.endSession()
+    }
+    private func launchWindowsBottleProcess(_ process: Process) throws {
+        closeCurrentGame()
+        activeWindowsBottleProcessGroup = try AppProcessSupervisor.run(process)
     }
     private func launchWindowsStoreGame(_ game: Game, provider: String, gameID: String) {
         guard let workspaceURL else {
             notice = "Choose a library folder before launching Windows games."
             return
         }
-        let selectedRuntime = game.windowsCompatibilityRuntime ?? .managedWine
+        let selectedRuntime = effectiveWindowsRuntime(for: game)
         let wine = selectedRuntime == .gamePortingToolkit
             ? WindowsRuntimeLayout.gamePortingToolkitWineExecutable(in: workspaceURL)
             : WindowsRuntimeLayout.wineExecutable(in: workspaceURL)
@@ -419,7 +538,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
+            try launchWindowsBottleProcess(process)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not launch \(game.title): \(error.localizedDescription)" }
     }
@@ -448,7 +567,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
+            try launchWindowsBottleProcess(process)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not open \(game.title): \(error.localizedDescription)" }
     }
@@ -491,7 +610,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
+            try launchWindowsBottleProcess(process)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not open \(game.title): \(error.localizedDescription)" }
     }
@@ -516,7 +635,30 @@ final class LibraryStore: ObservableObject {
         let highballManifest = highballSteam.appendingPathComponent("steamapps/appmanifest_\(appID).acf")
         var environment = ProcessInfo.processInfo.environment
         let process = Process()
-        if FileManager.default.fileExists(atPath: highballManifest.path) {
+        if game.windowsCompatibilityRuntime == .gamePortingToolkit {
+            guard let wine = WindowsRuntimeLayout.gamePortingToolkitWineExecutable(in: workspaceURL) else {
+                notice = "Install Game Porting Toolkit in Settings → Windows Gaming, then try again."
+                return
+            }
+            let prefix: URL
+            let steam: URL
+            if FileManager.default.fileExists(atPath: highballManifest.path) {
+                prefix = highballHome.appendingPathComponent("bottles/MetalOS-Steam", isDirectory: true)
+                steam = highballSteam.appendingPathComponent("steam.exe")
+            } else {
+                prefix = WindowsRuntimeLayout.bottle("Steam", in: workspaceURL).appendingPathComponent("prefix", isDirectory: true)
+                steam = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe")
+            }
+            guard FileManager.default.isReadableFile(atPath: steam.path) else {
+                notice = "The Windows Steam executable is missing from its managed bottle. Set up Windows Steam again in Settings → Windows Gaming."
+                return
+            }
+            process.executableURL = wine
+            process.arguments = [steam.path, "-applaunch", appID]
+            process.currentDirectoryURL = steam.deletingLastPathComponent()
+            environment["WINEPREFIX"] = prefix.path
+            environment["WINEDEBUG"] = "-all"
+        } else if FileManager.default.fileExists(atPath: highballManifest.path) {
             let cli = WindowsRuntimeLayout.highballCLI(in: workspaceURL)
             guard FileManager.default.isExecutableFile(atPath: cli.path) else {
                 notice = "The Highball CLI is missing. Open Settings → Windows Gaming and set up Windows Steam again."
@@ -548,7 +690,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
+            try launchWindowsBottleProcess(process)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not launch \(game.title) through Windows Steam: \(error.localizedDescription)" }
     }
@@ -568,9 +710,12 @@ final class LibraryStore: ObservableObject {
         let process = Process()
         var launchLog: URL?
         var launchLogHandle: FileHandle?
+        let selectedRuntime = effectiveWindowsRuntime(for: game)
+        let prefix = WindowsRuntimeLayout.winePrefix(forBottleAt: bottle)
         let highballBottles = WindowsRuntimeLayout.highballHome(in: workspaceURL).appendingPathComponent("bottles", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
-        if bottle.path.hasPrefix(highballBottles.path + "/") {
+        let isHighballBottle = bottle.path.hasPrefix(highballBottles.path + "/")
+        if isHighballBottle && selectedRuntime == .managedWine {
             let cli = WindowsRuntimeLayout.highballCLI(in: workspaceURL)
             let repository = WindowsRuntimeLayout.highballRepository(in: workspaceURL)
             guard FileManager.default.isExecutableFile(atPath: cli.path) else {
@@ -578,21 +723,27 @@ final class LibraryStore: ObservableObject {
                 return
             }
             process.executableURL = cli
-            process.arguments = ["run", bottle.lastPathComponent, executable.path]
+            process.arguments = ["run", bottle.lastPathComponent, executable.path] + (game.lutrisWineProfile?.launchArgumentList(prefix: prefix) ?? [])
             process.currentDirectoryURL = repository
             environment["HIGHBALL_HOME"] = WindowsRuntimeLayout.highballHome(in: workspaceURL).path
         } else {
             let expectedRoot = WindowsRuntimeLayout.bottles(in: workspaceURL).standardizedFileURL.resolvingSymlinksInPath()
-            guard bottle.path.hasPrefix(expectedRoot.path + "/"), let wine = WindowsRuntimeLayout.wineExecutable(in: workspaceURL) else {
+            let supportedBottle = bottle.path.hasPrefix(expectedRoot.path + "/") || (isHighballBottle && selectedRuntime == .gamePortingToolkit)
+            let wine = selectedRuntime == .gamePortingToolkit
+                ? WindowsRuntimeLayout.gamePortingToolkitWineExecutable(in: workspaceURL)
+                : WindowsRuntimeLayout.wineExecutable(in: workspaceURL)
+            guard supportedBottle, let wine else {
                 notice = "The Windows game path is outside a supported managed bottle. Re-add it from Settings → Windows Gaming."
                 return
             }
-            let prefix = WindowsRuntimeLayout.winePrefix(forBottleAt: bottle)
             environment["WINEPREFIX"] = prefix.path
             environment["WINEDEBUG"] = "+err"
+            if let architecture = game.lutrisWineProfile?.architecture { environment["WINEARCH"] = architecture }
             process.executableURL = wine
-            process.arguments = [executable.path]
-            process.currentDirectoryURL = executable.deletingLastPathComponent()
+            process.arguments = [executable.path] + (game.lutrisWineProfile?.launchArgumentList(prefix: prefix) ?? [])
+            let configuredWorkingDirectory = game.lutrisWineProfile?.workingDirectory.map { game.lutrisWineProfile!.resolveScriptPath($0, prefix: prefix) }
+            process.currentDirectoryURL = configuredWorkingDirectory.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+                ?? executable.deletingLastPathComponent()
             do {
                 let logDirectory = prefix.appendingPathComponent("MetalOS Logs", isDirectory: true)
                 try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
@@ -604,6 +755,42 @@ final class LibraryStore: ObservableObject {
                 launchLogHandle = try FileHandle(forWritingTo: logURL)
             } catch {
                 notice = "Could not prepare a launch log for \(game.title): \(error.localizedDescription)"
+                return
+            }
+        }
+        let backend = game.windowsGraphicsBackendUserSet == true
+            ? (game.windowsGraphicsBackend ?? .automatic)
+            : (game.lutrisWineProfile?.preferredGraphicsBackend ?? .automatic)
+        if selectedRuntime == .gamePortingToolkit {
+            environment.removeValue(forKey: "GRAPHICS_BACKEND")
+        } else if let value = backend.environmentValue {
+            environment["GRAPHICS_BACKEND"] = value
+        } else {
+            environment.removeValue(forKey: "GRAPHICS_BACKEND")
+        }
+        if let profile = game.lutrisWineProfile {
+            for (key, value) in profile.environment where !["WINE", "WINEPREFIX", "WINEARCH"].contains(key.uppercased()) {
+                environment[key] = profile.expand(value, prefix: prefix)
+            }
+            for (key, value) in profile.compatibilityEnvironment { environment[key] = value }
+            environment["WINEPREFIX"] = prefix.path
+            environment["WINEARCH"] = profile.architecture
+            if !profile.overrides.isEmpty { environment["WINEDLLOVERRIDES"] = profile.wineDLLOverrides }
+        }
+        if selectedRuntime == .managedWine,
+           process.executableURL?.path.contains("MetalSharp-Wine") == true {
+            do {
+                var gameEnvironment = game.lutrisWineProfile?.compatibilityEnvironment ?? [:]
+                if let graphicsBackend = environment["GRAPHICS_BACKEND"] {
+                    gameEnvironment["GRAPHICS_BACKEND"] = graphicsBackend
+                }
+                try WindowsRuntimeLayout.setMetalSharpGameEnvironment(
+                    gameEnvironment,
+                    removing: environment["GRAPHICS_BACKEND"] == nil ? ["GRAPHICS_BACKEND"] : [],
+                    in: executable.deletingLastPathComponent()
+                )
+            } catch {
+                notice = "Could not save MetalSharp's per-game graphics setting: \(error.localizedDescription)"
                 return
             }
         }
@@ -623,25 +810,25 @@ final class LibraryStore: ObservableObject {
             guard finishedProcess.terminationStatus != 0 || elapsed < 5 else { return }
             let code = finishedProcess.terminationStatus
             Task { @MainActor [weak self] in
-                self?.notice = "\(gameTitle) exited shortly after launch (code \(code)). See its log: \(logPath)"
+                guard let self else { return }
+                self.notice = "\(gameTitle) exited shortly after launch (code \(code)). See its log: \(logPath)"
+                self.notificationCenter.post("Game stopped unexpectedly", "\(gameTitle) exited shortly after launch with code \(code).", category: .games, level: .error)
             }
         }
         do {
-            try process.run()
+            try launchWindowsBottleProcess(process)
+            notificationCenter.post("Game launched", "\(game.title) is running.", category: .games, level: .success)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not launch \(game.title): \(error.localizedDescription)" }
     }
     private func launchBuiltGame(_ game: Game, configuration: GameRunConfiguration) {
-        if let gameProcess, gameProcess.isRunning {
-            notice = "\(game.title) is already running."
-            return
-        }
         let executable = URL(fileURLWithPath: configuration.executablePath).standardizedFileURL
         let directory = URL(fileURLWithPath: configuration.workingDirectory, isDirectory: true).standardizedFileURL
         guard FileManager.default.isExecutableFile(atPath: executable.path), FileManager.default.fileExists(atPath: directory.path) else {
             notice = "The built game files are unavailable. Rebuild this game to prepare them again."
             return
         }
+        closeCurrentGame()
         do {
             let logURL = directory.appendingPathComponent("host.log")
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -654,6 +841,7 @@ final class LibraryStore: ObservableObject {
             var environment = ProcessInfo.processInfo.environment
             environment.merge(configuration.environment) { _, gameValue in gameValue }
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + (environment["PATH"] ?? "")
+            if let enabled = game.metalHUDEnabled { environment["MTL_HUD_ENABLED"] = enabled ? "1" : "0" }
             process.environment = environment
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = output
@@ -670,10 +858,15 @@ final class LibraryStore: ObservableObject {
                         self.data.games[index].lastPlayed = Date()
                         self.save()
                     }
-                    GameFullScreenEnforcer.shared.endSession()
+                    if GameOverlayController.shared.game?.id == gameID {
+                        GameOverlayController.shared.endSession()
+                    }
+                    let level: AppNotificationLevel = terminated.terminationStatus == 0 ? .success : .warning
+                    self.notificationCenter.post("Game session ended", "The game exited with code \(terminated.terminationStatus).", category: .games, level: level)
                 }
             }
-            try process.run()
+            try AppProcessSupervisor.run(process)
+            notificationCenter.post("Game launched", "\(game.title) is running.", category: .games, level: .success)
             gameProcess = process
             gameRunLog = output
             startGameConsoleLog(at: logURL)
@@ -682,9 +875,45 @@ final class LibraryStore: ObservableObject {
                 save()
             }
             let application = NSRunningApplication(processIdentifier: process.processIdentifier)
-            GameOverlayController.shared.beginSession(game: game, application: application)
+            GameOverlayController.shared.beginSession(game: game, application: application,
+                                                      managedPID: process.processIdentifier)
         } catch {
             notice = "Could not start \(game.title): \(error.localizedDescription)"
+        }
+    }
+    private func launchPS2Game(_ game: Game) {
+        guard let workspaceURL, let applicationURL = PS2RuntimeLayout.application(in: workspaceURL) else {
+            notice = "Install ARMSX2 in Settings → PlayStation 2 before launching this game."
+            return
+        }
+        guard PS2GameDiscovery.extensions.contains(URL(fileURLWithPath: game.installPath).pathExtension.lowercased()),
+              FileManager.default.isReadableFile(atPath: game.installPath) else {
+            notice = "This PS2 disc image is unavailable. Reconnect its drive or add the image again."
+            return
+        }
+        closeCurrentGame()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = ["-batch", "-bigpicture", "-fullscreen", "--", game.installPath]
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration) { [weak self] application, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.notice = "Could not open ARMSX2: \(error.localizedDescription). If macOS blocked this unsigned nightly, approve it in Privacy & Security and retry."
+                    return
+                }
+                guard let application else {
+                    self.notice = "ARMSX2 did not start. Open it from Settings → PlayStation 2 to finish first-run setup."
+                    return
+                }
+                self.activeExternalGameApplication = application
+                if let index = self.data.games.firstIndex(where: { $0.id == game.id }) {
+                    self.data.games[index].lastPlayed = Date()
+                    self.save()
+                }
+                GameOverlayController.shared.beginSession(game: game, application: application)
+                self.notificationCenter.post("Game launched", "Opening \(game.title) in ARMSX2.", category: .games, level: .success)
+            }
         }
     }
     var hasRunningNXNativeGame: Bool { gameProcess?.isRunning == true && gameConsoleLogURL != nil }
@@ -735,11 +964,37 @@ final class LibraryStore: ObservableObject {
         let fallbackTitle = discovered?.title ?? suggestedMacAppTitle(at: url)
         let game = Game(id: "manual:\(url.path)", title: title.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackTitle, source: discovered?.source ?? .native, launchURL: url.absoluteString, installPath: url.path, titleID: discovered?.titleID, isGameApp: discovered?.isGame ?? false)
         data.games.append(game); source = .all; showingApps = !game.isGame; selectedID = game.id; save()
+        notificationCenter.post("Game added to library", "Added \(game.title).", category: .library, level: .success)
         if game.source == .nxnative { Task { await checkNXSupport() } }
         fetchArtwork(gameID: game.id, force: true)
         return true
     }
-    @discardableResult func addWindowsGame(at url: URL, customTitle: String? = nil) -> Bool {
+    @discardableResult func addPS2Game(at url: URL) -> Bool {
+        guard workspaceURL != nil else {
+            notice = "Choose your library folder before adding a PlayStation 2 game."
+            return false
+        }
+        guard let game = PS2GameDiscovery.game(at: url) else {
+            notice = "Choose a readable PS2 disc image."
+            return false
+        }
+        if let existing = data.games.first(where: { $0.id == game.id }) {
+            selectedID = existing.id
+            source = .ps2
+            showingApps = false
+            notice = "\(existing.title) is already in your library."
+            return true
+        }
+        data.games.append(game)
+        source = .ps2
+        showingApps = false
+        selectedID = game.id
+        save()
+        notificationCenter.post("Game added to library", "Added \(game.title). The disc image stays in its current location.", category: .library, level: .success)
+        fetchArtwork(gameID: game.id, force: true)
+        return true
+    }
+    @discardableResult func addWindowsGame(at url: URL, customTitle: String? = nil, lutrisProfile: LutrisWineProfile? = nil) -> Bool {
         guard let workspaceURL, url.pathExtension.lowercased() == "exe" else {
             notice = "Choose a Windows .exe game installed inside a managed bottle."
             return false
@@ -770,8 +1025,11 @@ final class LibraryStore: ObservableObject {
                 data.games[index].title = title
                 data.games[index].artworkCheckedAt = nil
                 titleChanged = true
-                save()
             }
+            if let index = data.games.firstIndex(where: { $0.id == existing.id }), let lutrisProfile {
+                data.games[index].lutrisWineProfile = lutrisProfile
+                save()
+            } else if titleChanged { save() }
             source = .all
             showingApps = false
             favoritesOnly = false
@@ -783,7 +1041,7 @@ final class LibraryStore: ObservableObject {
         }
         let id = "windows-exe:\(UUID().uuidString)"
         let game = Game(id: id, title: title, source: .windows, launchURL: "metalos-windows://exe/\(id)", installPath: executable.path,
-                        windowsExecutablePath: executable.path, windowsBottlePath: bottle.path)
+                        windowsExecutablePath: executable.path, windowsBottlePath: bottle.path, lutrisWineProfile: lutrisProfile)
         data.games.append(game)
         source = .all
         showingApps = false
@@ -791,8 +1049,62 @@ final class LibraryStore: ObservableObject {
         query = ""
         selectedID = game.id
         save()
+        notificationCenter.post("Game added to library", "Added \(game.title).", category: .library, level: .success)
         Task { await enrichWindowsExecutable(gameID: game.id, executable: executable) }
         fetchArtwork(gameID: game.id, force: true)
+        return true
+    }
+
+    @discardableResult func addPreparedLutrisBottle(at url: URL, profile: LutrisWineProfile) -> Bool {
+        guard let workspaceURL else {
+            notice = "Choose a library folder before preparing Lutris games."
+            return false
+        }
+        let bottlesRoot = WindowsRuntimeLayout.bottles(in: workspaceURL).standardizedFileURL.resolvingSymlinksInPath()
+        let bottle = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard bottle.path.hasPrefix(bottlesRoot.path + "/"),
+              FileManager.default.fileExists(atPath: bottle.appendingPathComponent("prefix/drive_c").path) else {
+            notice = "The prepared Lutris bottle is outside the managed Windows bottles folder."
+            return false
+        }
+        let id = "lutris-bottle:\(UUID().uuidString)"
+        let game = Game(id: id, title: profile.gameName, source: .windows,
+                        launchURL: "metalos-windows://prepared/\(id)", installPath: bottle.path,
+                        windowsBottlePath: bottle.path, lutrisWineProfile: profile)
+        data.games.append(game)
+        source = .all
+        showingApps = false
+        favoritesOnly = false
+        query = ""
+        selectedID = id
+        save()
+        notificationCenter.post("Lutris bottle ready", "Prepared a Wine bottle for \(profile.gameName). Install the game files yourself, then select its executable.", category: .library, level: .success)
+        fetchArtwork(gameID: id, force: true)
+        return true
+    }
+
+    @discardableResult func attachWindowsGame(at url: URL, toPreparedBottle gameID: String) -> Bool {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID && $0.windowsBottlePath != nil && $0.windowsExecutablePath == nil }),
+              let bottlePath = data.games[index].windowsBottlePath,
+              url.pathExtension.lowercased() == "exe" else {
+            notice = "Choose a Windows .exe installed in the prepared Lutris bottle."
+            return false
+        }
+        let bottle = URL(fileURLWithPath: bottlePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+        let prefix = WindowsRuntimeLayout.winePrefix(forBottleAt: bottle).standardizedFileURL.resolvingSymlinksInPath()
+        let executable = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard executable.path.hasPrefix(prefix.appendingPathComponent("drive_c", isDirectory: true).path + "/"),
+              FileManager.default.isReadableFile(atPath: executable.path) else {
+            notice = "Choose the game's executable inside this bottle's C: drive."
+            return false
+        }
+        data.games[index].windowsExecutablePath = executable.path
+        data.games[index].installPath = executable.path
+        data.games[index].launchURL = "metalos-windows://exe/\(gameID)"
+        save()
+        selectedID = gameID
+        notificationCenter.post("Game executable added", "\(data.games[index].title) is ready to launch.", category: .library, level: .success)
+        Task { await enrichWindowsExecutable(gameID: gameID, executable: executable) }
         return true
     }
 
@@ -847,6 +1159,7 @@ final class LibraryStore: ObservableObject {
         showingApps = false
         selectedID = game.id
         save()
+        notificationCenter.post("Game added to library", "Added \(game.title).", category: .library, level: .success)
         fetchArtwork(gameID: game.id, force: true)
         return true
     }
@@ -923,6 +1236,7 @@ final class LibraryStore: ObservableObject {
                     selectedID = data.games[index].id
                 }
                 source = .nxnative; showingApps = false; save(); openBuildAfterImport = false
+                notificationCenter.post("Game added to library", "Added \(folderName).", category: .library, level: .success)
                 Task { await checkNXSupport() }
                 fetchArtwork()
             } catch {
@@ -931,6 +1245,10 @@ final class LibraryStore: ObservableObject {
         }
     }
     func startBuild(gameID: String, launchWhenComplete: Bool = false) {
+        guard !isMaintainingRuntimes else {
+            notice = "Wait for runtime maintenance to finish before starting a build."
+            return
+        }
         guard let index = data.games.firstIndex(where: { $0.id == gameID }), data.games[index].source == .nxnative else { return }
         NXBuildEnvironment.applyDefaults(to: &data.settings, discoverCheckout: false)
         selectedID = gameID
@@ -941,10 +1259,12 @@ final class LibraryStore: ObservableObject {
         if !builder.isBuilding { launchAfterBuildID = nil }
     }
     func removeGame(id: String) {
+        let removedTitle = data.games.first(where: { $0.id == id })?.title
         let legacyPaths = data.games.first(where: { $0.id == id }).map {
             [$0.boxArt?.path, $0.tileArt?.path, $0.heroArt?.path].compactMap { $0 }
         } ?? []
         data.games.removeAll { $0.id == id }
+        if let removedTitle { notificationCenter.post("Game removed", "Removed \(removedTitle) from your library.", category: .library, level: .info) }
         if selectedID == id { selectedID = nil }
         artworkMessages[id] = nil
         save()
@@ -983,6 +1303,7 @@ final class LibraryStore: ObservableObject {
                 }
             }
             var updated = 0
+            var gamesWithIssues = 0
             for (number, snapshot) in pending.enumerated() {
                 guard !Task.isCancelled else { break }
                 self.artworkStatus = "Finding artwork \(number + 1)/\(pending.count): \(snapshot.title)"
@@ -1055,15 +1376,26 @@ final class LibraryStore: ObservableObject {
                     $0.hasPrefix("GameDB returned data MetalOS could not read:") ||
                     $0.hasPrefix("Could not download ")
                 }
+                if retryableArtworkFailure { gamesWithIssues += 1 }
                 // Don't suppress retries for a transient network, decode, or image-download failure.
                 self.data.games[index].artworkCheckedAt = retryableArtworkFailure ? nil : Date()
                 self.artworkMessages[snapshot.id] = messages.isEmpty ? "Artwork downloaded and stored." : messages.joined(separator: "\n")
                 self.save()
             }
             self.artworkStatus = Task.isCancelled ? "Artwork fetching stopped." : "Artwork checked. Updated \(updated) of \(pending.count) games."
+            if updated > 0 {
+                self.notificationCenter.post("Artwork refreshed", "Updated artwork or details for \(updated) of \(pending.count) games.", category: .artwork, level: .success)
+            }
+            if gamesWithIssues > 0 {
+                self.notificationCenter.post("Artwork refresh needs attention", "Could not fully update \(gamesWithIssues) game\(gamesWithIssues == 1 ? "" : "s"). Open Artwork settings for details.", category: .artwork, level: .warning)
+            }
         }
     }
-    func cancelArtwork() { artworkTask?.cancel() }
+    func cancelArtwork() {
+        guard artworkTask != nil else { return }
+        artworkTask?.cancel()
+        notificationCenter.post("Artwork refresh stopped", "The artwork refresh was cancelled.", category: .artwork, level: .warning)
+    }
 
     private static func addFallback(_ fallback: ArtworkLookupResult, to primary: ArtworkLookupResult) -> ArtworkLookupResult {
         var combined = primary
@@ -1086,6 +1418,5 @@ final class LibraryStore: ObservableObject {
     }
     func toggleConsole() {
         console.toggle()
-        if let window = NSApp.windows.first(where: { !($0 is NSPanel) && $0.canBecomeMain && $0.sheetParent == nil }), window.styleMask.contains(.fullScreen) != console { window.toggleFullScreen(nil) }
     }
 }

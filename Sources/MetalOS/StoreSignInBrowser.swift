@@ -11,7 +11,7 @@ struct StoreSignInBrowser: View {
     let url: URL
     @ObservedObject var session: InAppBrowserSession
     let complete: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.consolePageClose) private var closePage
     @ObservedObject private var controller = ControllerManager.shared
     @State private var mode: StoreSignInMode?
     @State private var modeSelection = 0
@@ -46,7 +46,7 @@ struct StoreSignInBrowser: View {
         .frame(minWidth: 760, minHeight: 600)
         .preferredColorScheme(.dark)
         .tint(studioAccent)
-        .consoleSheet(isPresented: $keyboardOpen) {
+        .consolePage(isPresented: $keyboardOpen) {
             SearchKeyboardView(query: $code, title: "Enter authorization code", subtitle: "Enter the code or redirect URL shown in your browser.", doneTitle: "Connect", onCancel: { keyboardOpen = false }) {
                 keyboardOpen = false
                 finish(code)
@@ -76,7 +76,7 @@ struct StoreSignInBrowser: View {
             case "up", "left": modeSelection = max(modeSelection - 1, 0)
             case "down", "right": modeSelection = min(modeSelection + 1, 2)
             case "confirm": selectMode(modeSelection)
-            case "back", "menu", "context": dismiss()
+            case "back", "menu", "context": closePage()
             default: break
             }
         }
@@ -132,7 +132,7 @@ struct StoreSignInBrowser: View {
                 Text("Store account sign-in").font(.system(size: 12)).foregroundStyle(.white.opacity(0.56))
             }
             Spacer()
-            Button(backLabel) { if mode == nil { dismiss() } else { mode = nil } }
+            Button(backLabel) { if mode == nil { closePage() } else { mode = nil } }
                 .buttonStyle(ConsoleButtonStyle())
                 .keyboardShortcut(.cancelAction)
         }
@@ -181,7 +181,7 @@ struct StoreSignInBrowser: View {
             session.loadAddress(url.absoluteString)
         case 1:
             mode = .externalBrowser
-        default: dismiss()
+        default: closePage()
         }
     }
 
@@ -211,7 +211,7 @@ struct StoreSignInBrowser: View {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         complete(value)
-        dismiss()
+        closePage()
     }
 
     private func syncBackgroundControllerAction() {

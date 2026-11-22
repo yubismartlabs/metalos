@@ -4,6 +4,7 @@ import SwiftUI
 /// Window-scoped keyboard routing also works after a mouse click changes SwiftUI focus.
 struct LibraryKeyHandler: NSViewRepresentable {
     var enabled: Bool
+    var shortcuts: [String: String] = [:]
     var onCommand: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView {
@@ -13,11 +14,13 @@ struct LibraryKeyHandler: NSViewRepresentable {
     }
     func updateNSView(_ view: NSView, context: Context) {
         context.coordinator.enabled = enabled
+        context.coordinator.shortcuts = shortcuts
         context.coordinator.onCommand = onCommand
     }
     static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.detach() }
     @MainActor final class Coordinator {
         var enabled = false
+        var shortcuts: [String: String] = [:]
         var onCommand: ((String) -> Void)?
         private weak var view: NSView?
         private var monitor: Any?
@@ -31,8 +34,10 @@ struct LibraryKeyHandler: NSViewRepresentable {
                 if let editor = target.firstResponder as? NSTextView, editor.isEditable { return event }
                 if let field = target.firstResponder as? NSTextField, field.isEditable { return event }
                 let keys: [UInt16: String] = [123: "left", 124: "right", 125: "down", 126: "up", 36: "confirm", 76: "confirm", 53: "back", 49: "context"]
-                let command = keys[event.keyCode] ?? (event.charactersIgnoringModifiers?.lowercased() == "m" ? "context" : nil)
+                let character = event.charactersIgnoringModifiers?.lowercased() ?? ""
+                let command = keys[event.keyCode] ?? self.shortcuts[character] ?? (character == "m" ? "context" : nil)
                 guard let command else { return event }
+                if !self.shortcuts.isEmpty, event.isARepeat, ConsoleDirection(rawValue: command) == nil { return nil }
                 ConsoleFeedback.shared.respond(to: command)
                 self.onCommand?(command)
                 return nil

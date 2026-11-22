@@ -22,13 +22,17 @@ final class StudioAppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1380, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "MetalOS"; window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: LibraryView().environmentObject(library).frame(minWidth: 1000, minHeight: 680).preferredColorScheme(.dark))
+        window.contentView = NSHostingView(rootView: MetalOSRootView().environmentObject(library).frame(minWidth: 1000, minHeight: 680).preferredColorScheme(.dark))
         fallbackWindow = window; window.center(); window.makeKeyAndOrderFront(nil)
         GameOverlayController.shared.configure(store: library)
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) { builder?.cancel() }
+    func applicationWillTerminate(_ notification: Notification) {
+        builder?.cancel()
+        library?.closeCurrentGame()
+        AppProcessSupervisor.terminateAll()
+    }
 }
 
 @main
@@ -43,7 +47,7 @@ struct MetalOSApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            LibraryView().environmentObject(library)
+            MetalOSRootView().environmentObject(library)
                 .frame(minWidth: 1000, minHeight: 680)
                 .preferredColorScheme(.dark)
                 .onAppear {
@@ -64,6 +68,31 @@ struct MetalOSApp: App {
                 Button("Game Bar") { GameOverlayController.shared.showFromLibrary() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Toggle Console Mode") { library.toggleConsole() }.keyboardShortcut("f", modifiers: [.command, .shift])
             }
+        }
+    }
+}
+
+private struct MetalOSRootView: View {
+    @EnvironmentObject private var library: LibraryStore
+    @State private var showingStartupScreen = true
+    @ObservedObject private var preferences = ConsolePreferences.shared
+    @ObservedObject private var feedback = ConsoleFeedback.shared
+
+    var body: some View {
+        ZStack {
+            LibraryView()
+            if showingStartupScreen && preferences.bootAnimation && !feedback.motionReduced {
+                StartupScreenView {
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        showingStartupScreen = false
+                    }
+                }
+                .transition(.opacity)
+                .zIndex(1)
+            }
+        }
+        .onAppear {
+            if !preferences.bootAnimation || feedback.motionReduced { showingStartupScreen = false }
         }
     }
 }
