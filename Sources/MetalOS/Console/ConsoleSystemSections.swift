@@ -106,6 +106,75 @@ extension ConsoleSystemPage {
 
     var settingsSections: [Section] {
         [
+            Section(title: "System Software", symbol: "arrow.down.circle", rows: [
+                firmware("Console Information", "MetalOS \(ConsoleMaintenance.appVersion)", detail: "Application and runtime version information."),
+                firmware("System Software Update and Settings", "Up to date", detail: "Managed application updates are available from Updates."),
+                firmware("Feature Information", "View available features", detail: "Review current MetalOS console features.")
+            ]),
+            Section(title: "Language", symbol: "character.bubble", rows: [
+                firmware("Console Language", Locale.current.localizedString(forIdentifier: Locale.current.identifier) ?? "System Default", detail: "The interface follows the macOS language."),
+                firmware("Input Languages", "System managed", detail: "Keyboard input languages are configured in macOS.")
+            ]),
+            Section(title: "Date and Time", symbol: "calendar", rows: [
+                firmware("Time Zone", TimeZone.current.identifier, detail: "Uses the time zone configured in macOS."),
+                firmware("Time Format", DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current)?.contains("a") == true ? "12-hour" : "24-hour", detail: "Uses your regional format settings.")
+            ]),
+            Section(title: "Power Saving", symbol: "battery.100", rows: [
+                firmware("Time Until Rest Mode", "System managed", detail: "Power behavior follows macOS energy settings."),
+                firmware("Features Available in Rest Mode", "Background services", detail: "Library scans and update checks can run while MetalOS is open.")
+            ]),
+            Section(title: "HDMI", symbol: "cable.connector", rows: [
+                firmware("Enable HDMI Device Link", "Display dependent", detail: "Device link support depends on the connected display."),
+                firmware("HDCP", "Display dependent", detail: "Protected playback follows macOS and display support.")
+            ]),
+            Section(title: "Beep & Light", symbol: "lightbulb", rows: [
+                firmware("Beep Volume", feedback.soundsEnabled ? feedback.volumeText : "Muted", detail: "Navigation sound volume for console menus."),
+                firmware("Power Indicator Brightness", "System managed", detail: "No hardware power indicator is connected to MetalOS.")
+            ]),
+            Section(title: "Accessories", symbol: "gamecontroller", rows: [
+                Row(title: "Bluetooth Accessories", detail: "View connected controllers and device status.", symbol: "dot.radiowaves.left.and.right", action: { sheet = .controllers }),
+                Row(title: "Turn Off Accessories", detail: "Disconnect or power down supported devices.", value: "Open device controls", symbol: "power", action: { sheet = .controllers }),
+                Row(title: "Controller Settings", detail: "Vibration, trigger effects, indicators, and communication method.", symbol: "slider.horizontal.3", action: { sheet = .controllers }),
+                firmware("PlayStation VR2, Camera, and Media Remote", "Device dependent", detail: "Connect supported hardware to view its calibration and button options.")
+            ]),
+            Section(title: "Storage", symbol: "externaldrive", rows: [
+                firmware("Console Storage", store.data.games.count.description + " games", detail: "Game and application files stored in the current library."),
+                firmware("M.2 SSD Storage", "Not configured", detail: "Additional storage is managed by the selected library folder."),
+                firmware("USB Extended Storage", "Not configured", detail: "External library folders can be added under Library & Paths."),
+                firmware("Games and Apps · Media Gallery · Saved Data · Other", "Library managed", detail: "MetalOS stores games in your selected library and captures in Pictures / MetalOS.")
+            ]),
+            Section(title: "Screen and Video", symbol: "display", rows: [
+                firmware("Resolution", NSScreen.main.map { "\(Int($0.frame.width)) × \(Int($0.frame.height))" } ?? "Display default", detail: "Uses the current macOS display mode."),
+                firmware("VRR · 120 Hz · ALLM", "Display dependent", detail: "Refresh rate and latency features depend on macOS and the connected display."),
+                firmware("HDR Calibration", "Display settings", detail: "Configure HDR in macOS Displays settings."),
+                firmware("Adjust Display Area", "Full screen", detail: "Game windows use the available display area."),
+                firmware("Dim Screen", "System managed", detail: "Display dimming is controlled by macOS.")
+            ]),
+            Section(title: "Sound", symbol: "speaker.wave.2", rows: [
+                Row(title: "Microphone", detail: "Input device, input level, and login status are managed by macOS.", value: "System settings", symbol: "mic"),
+                Row(title: "Audio Output", detail: "Output device and spatial audio are managed by macOS and the selected game.", value: "System settings", symbol: "hifispeaker"),
+                toggle("Navigation Sounds", symbol: "speaker.wave.2", enabled: feedback.soundsEnabled) { feedback.soundsEnabled.toggle() },
+                Row(title: "Volume", value: feedback.volumeText, symbol: "speaker.wave.2.fill", action: { sheet = .choices("Navigation Volume", stride(from: 0, through: 100, by: 10).map { value in
+                    Choice(id: "\(value)%", selected: Int(feedback.volume * 100) == value, choose: { feedback.volume = Double(value) / 100 })
+                }) })
+            ]),
+            Section(title: "Network", symbol: "network", rows: [
+                firmware("Connection Status", "System managed", detail: "View Wi-Fi and LAN connections in macOS Network settings."),
+                firmware("Test Internet Connection", "Available in Network settings", detail: "The active network connection is managed by macOS."),
+                firmware("Set Up Internet Connection", "Wi-Fi / LAN", detail: "Configure wireless and wired networks in macOS System Settings.")
+            ]),
+            Section(title: "Users and Accounts", symbol: "person.crop.circle", rows: [
+                firmware("Account Information", "Player 1", detail: "Local MetalOS profile."),
+                firmware("Privacy Settings", "Local profile", detail: "Account privacy controls are not connected to an online console service."),
+                firmware("Linked Services", "Discord · Spotify · Twitch · YouTube", detail: "Linked service integrations can be configured in their respective apps."),
+                firmware("Login Settings", "macOS account", detail: "Device login and passcodes are managed by macOS.")
+            ]),
+            Section(title: "Captures and Broadcasts", symbol: "record.circle", rows: [
+                firmware("Screenshot Resolution", "Display resolution", detail: "Captures use the current display resolution."),
+                firmware("Video Clip Format", "MP4 / WebM", detail: "Capture output format depends on the recording tool."),
+                firmware("Trophy Capture Triggers", "Not configured", detail: "Trophy capture triggers require a supported game runtime."),
+                firmware("Broadcast Overlay Settings", "Game Bar", detail: "Open Game Bar while playing to manage capture overlays.")
+            ]),
             Section(title: "Display & Metal", symbol: "display", rows: [
                 firmware("Metal Device", Self.metalDevice, detail: "Graphics device available to MetalOS."),
                 toggle("Launch Games Full Screen", detail: "Requests full screen for supported game windows.",

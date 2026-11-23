@@ -538,6 +538,7 @@ private struct GameOverlayView: View {
                     .font(ConsoleDesign.Typography.action)
                     .buttonStyle(.bordered)
                 } else {
+                    if overlay.game != nil && !overlay.showingRemap { controlCenterCards }
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
@@ -562,6 +563,7 @@ private struct GameOverlayView: View {
                             withAnimation(ConsoleFeedback.shared.pageAnimation) { proxy.scrollTo(action) }
                         }
                     }
+                    if overlay.game != nil && !overlay.showingRemap { controlCenterDock }
                 }
                 footer
             }
@@ -624,6 +626,78 @@ private struct GameOverlayView: View {
         }
         .font(ConsoleDesign.Typography.metadata)
         .foregroundStyle(ConsoleDesign.Palette.secondaryText)
+    }
+
+    private var controlCenterCards: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                controlCenterCard("Activities", "Continue your current objective", symbol: "figure.run", detail: "3 activities · about 2 hours") {
+                    overlay.perform(.resume)
+                }
+                controlCenterCard("Official News", "The latest from the game", symbol: "newspaper", detail: "Updates and community stories") {
+                    overlay.perform(.performance)
+                }
+                controlCenterCard("Recent Captures", "Screenshots and video clips", symbol: "photo.on.rectangle", detail: "Open capture tools") {
+                    overlay.perform(.capture)
+                }
+            }
+            .padding(.vertical, 3)
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: 88)
+    }
+
+    private func controlCenterCard(_ title: String, _ headline: String, symbol: String, detail: String,
+                                   action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 18, weight: .medium)).foregroundStyle(appearance.accent)
+                    .frame(width: 34, height: 34).background(appearance.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text(headline).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    Text(detail).font(.system(size: 10)).foregroundStyle(.white.opacity(0.57)).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .frame(width: 255, height: 72, alignment: .leading)
+            .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.1)))
+        }
+        .buttonStyle(ConsoleButtonStyle())
+    }
+
+    private var controlCenterDock: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 0) {
+                dockItem("Home", "house.fill")
+                dockItem("Switcher", "rectangle.stack")
+                dockItem("Notifications", "bell.badge")
+                dockItem("Game Base", "person.2.fill")
+                dockItem("Music", "music.note")
+                dockItem("Sound", "speaker.wave.2.fill")
+                dockItem("Mic", "mic.fill")
+                dockItem("Accessories", "gamecontroller.fill")
+                dockItem("Profile", "person.crop.circle")
+                dockItem("Power", "power")
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.top, 8)
+        .overlay(alignment: .top) { Rectangle().fill(ConsoleDesign.Palette.border).frame(height: 1) }
+    }
+
+    private func dockItem(_ title: String, _ symbol: String) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .medium))
+            Text(title).font(.system(size: 9, weight: .medium)).lineLimit(1)
+        }
+        .foregroundStyle(.white.opacity(0.72))
+        .frame(minWidth: 63, minHeight: 47)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 
     private func actionTile(_ action: OverlayAction) -> some View {

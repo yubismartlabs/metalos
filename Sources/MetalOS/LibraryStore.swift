@@ -4,6 +4,8 @@ import Combine
 
 @MainActor
 final class LibraryStore: ObservableObject {
+    var onConsoleExternalApplicationLaunched: ((NSRunningApplication, String, String) -> Void)?
+    var onConsoleManagedProcessLaunched: ((pid_t, String, String) -> Void)?
     @Published var data = LibraryData()
     @Published private(set) var setupComplete = false
     @Published private(set) var workspacePath = ""
@@ -42,6 +44,9 @@ final class LibraryStore: ObservableObject {
     private let artworkAPI = ArtworkAPI()
     private var artworkCache: ArtworkCache
     private var artworkTask: Task<Void, Never>?
+    private lazy var metadataEnrichmentQueue = MetadataEnrichmentQueue { [weak self] result in
+        self?.applyMetadataEnrichment(result)
+    }
     private var queuedArtworkIDs: [String: Bool] = [:]
     private var storage: URL
     private var canSave = true
@@ -62,13 +67,13 @@ final class LibraryStore: ObservableObject {
     var workspaceURL: URL? { workspacePath.isEmpty ? nil : URL(fileURLWithPath: workspacePath, isDirectory: true) }
     var visibleGames: [Game] {
         data.games.filter {
-            $0.isGame != showingApps &&
+            !($0.isHidden ?? false) && $0.isGame != showingApps &&
             (source == .all || $0.source == source) && (!favoritesOnly || $0.favorite) &&
             (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query))
         }.sorted(by: Self.gameOrder)
     }
     var consoleGames: [Game] {
-        data.games.filter(\.isGame).sorted(by: Self.gameOrder)
+        data.games.filter { $0.isGame && !($0.isHidden ?? false) }.sorted(by: Self.gameOrder)
     }
     private static func gameOrder(_ lhs: Game, _ rhs: Game) -> Bool {
         if lhs.favorite != rhs.favorite { return lhs.favorite }
@@ -92,9 +97,20 @@ final class LibraryStore: ObservableObject {
         let completed = defaults.bool(forKey: Self.setupDefaultsKey) && hasWorkspace
         self.setupComplete = completed
         self.workspacePath = completed ? savedURL.path : ""
-        let legacyStorage = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NXStudio/library.json")
-        let resolvedStorage = completed ? Self.libraryFile(in: savedURL) : legacyStorage
-        self.storage = storage ?? resolvedStorage
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let legacyStorage = completed ? Self.libraryFile(in: savedURL) : support.appendingPathComponent("NXStudio/library.json")
+        let resolvedStorage = support.appendingPathComponent("MetalOS/library.json")
+        var migrationFailed = false
+        if storage == nil, !FileManager.default.fileExists(atPath: resolvedStorage.path),
+           FileManager.default.fileExists(atPath: legacyStorage.path) {
+            do {
+                try FileManager.default.createDirectory(at: resolvedStorage.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: legacyStorage, to: resolvedStorage)
+            } catch { migrationFailed = true }
+        }
+        // Consolidate the console library in Application Support even before workspace setup.
+        // The old workspace and NXStudio locations remain untouched after this one-time copy.
+        self.storage = storage ?? (migrationFailed ? legacyStorage : resolvedStorage)
         let cacheRoot = completed ? Self.artworkDirectory(in: savedURL) : nil
         let cache = artworkCache ?? ArtworkCache(root: cacheRoot)
         self.artworkCache = cache
@@ -129,8 +145,7 @@ final class LibraryStore: ObservableObject {
         }
         let originalGameCount = data.games.count
         data.games.removeAll { game in
-            game.source == .steam || game.source == .heroic ||
-            (game.id.hasPrefix("app:") && GameDiscovery.managerBundleIDs.contains(Bundle(path: game.installPath)?.bundleIdentifier ?? ""))
+            game.id.hasPrefix("app:") && GameDiscovery.managerBundleIDs.contains(Bundle(path: game.installPath)?.bundleIdentifier ?? "")
         }
         if data.games.count != originalGameCount { save() }
         builder.onComplete = { [weak self] id, url in
@@ -183,6 +198,33 @@ final class LibraryStore: ObservableObject {
             try FileManager.default.createDirectory(at: storage.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(data).write(to: storage, options: .atomic)
         } catch { notice = "Could not save library: \(error.localizedDescription)" }
+    }
+
+    func markGameLaunched(_ id: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == id }) else { return }
+        data.games[index].lastPlayed = .now
+        save()
+    }
+
+    func setFavorite(_ isFavorite: Bool, gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].favorite = isFavorite
+        save()
+    }
+
+    func setHidden(_ isHidden: Bool, gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        data.games[index].isHidden = isHidden
+        save()
+    }
+
+    func setCollection(_ collectionID: String, containsGame gameID: String) {
+        guard let index = data.games.firstIndex(where: { $0.id == gameID }) else { return }
+        var collections = Set(data.games[index].collectionIDs ?? [])
+        if collections.contains(collectionID) { collections.remove(collectionID) }
+        else { collections.insert(collectionID) }
+        data.games[index].collectionIDs = collections.sorted()
+        save()
     }
     func recordPlaytime(gameID: String, seconds: TimeInterval) {
         guard seconds.isFinite, seconds >= 1,
@@ -255,8 +297,12 @@ final class LibraryStore: ObservableObject {
         guard !isScanning else { return }
         isScanning = true
         let previousGameIDs = Set(data.games.map(\.id))
-        let roots = Set(data.settings.scanRoots + (workspacePath.isEmpty ? [] : [workspacePath])).sorted()
-        let result = await GameDiscovery().scan(roots: roots)
+        let settings = ConsoleSettingsStore.shared
+        let enabledRoots = settings.gamePaths.filter(\.enabled).map(\.path)
+        let roots = Set(data.settings.scanRoots + enabledRoots + (workspacePath.isEmpty ? [] : [workspacePath])).sorted()
+        let profiles = settings.emulatorProfiles
+        data.settings.emulatorProfiles = profiles
+        let result = await GameScannerService().scan(roots: roots, emulatorProfiles: profiles)
         var discovered = result.games
         if let workspaceURL {
             discovered += GameDiscovery.windowsClientLaunchers(in: workspaceURL)
@@ -279,6 +325,7 @@ final class LibraryStore: ObservableObject {
         isScanning = false
         save()
         fetchArtwork()
+        enrichConsoleGames(focusedGameID: selectedID)
     }
     /// Merge Switch inputs by their folder even after installPath changes to the built app.
     func mergeDiscoveredGames(_ games: [Game]) {
@@ -288,6 +335,9 @@ final class LibraryStore: ObservableObject {
                     ($0.installPath == game.installPath || (game.buildInput != nil && $0.buildInput == game.buildInput)))
             }) {
                 data.games[index].title = game.title
+                data.games[index].normalizedTitle = game.normalizedTitle ?? GameDBService.sanitizeTitle(game.displayTitle)
+                data.games[index].platformBadge = game.platformBadge ?? data.games[index].platformBadge
+                if game.launchSpec != nil { data.games[index].launchSpec = game.launchSpec }
                 if game.source == .nxnative, game.buildInput != nil {
                     data.games[index].buildInput = game.buildInput
                     data.games[index].titleID = game.titleID
@@ -399,6 +449,29 @@ final class LibraryStore: ObservableObject {
             return
         }
         guard game.isAvailable else { notice = "This game is unavailable. Connect its drive or check its installation path."; return }
+        switch game.launchSpec {
+        case .some(.appBundle(let appURL, _)):
+            launchApplication(game, at: appURL, arguments: [])
+            return
+        case .some(.emulator(let emulatorAppURL, _, let arguments)):
+            launchApplication(game, at: emulatorAppURL, arguments: arguments)
+            return
+        case .some(.bottle(let bottleName, let bottlePath, let executableURL, let wrapperURL)):
+            if let wrapperURL {
+                launchApplication(game, at: wrapperURL, arguments: [])
+            } else if game.source == .whisky {
+                let whisky = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.isaacmarovitz.Whisky")
+                guard let whisky else { notice = "Whisky is not installed. Install Whisky or choose a wrapper app for this game."; return }
+                launchApplication(game, at: whisky, arguments: ["--bottle", bottlePath.path, executableURL.path])
+            } else {
+                launchCrossOverExecutable(game, bottleName: bottleName, bottlePath: bottlePath, executableURL: executableURL)
+            }
+            return
+        case .some(.steam):
+            break // The console coordinator waits for Steam's real game process before yielding.
+        case .none:
+            break
+        }
         if game.windowsBottlePath != nil && game.windowsExecutablePath == nil {
             notice = "This Lutris bottle is ready. Install your game, then choose its executable from the game details page."
             return
@@ -445,11 +518,63 @@ final class LibraryStore: ObservableObject {
                 else if let i = self.data.games.firstIndex(where: { $0.id == game.id }) {
                     self.data.games[i].lastPlayed = Date(); self.save()
                     self.activeExternalGameApplication = application
+                    if let application { self.onConsoleExternalApplicationLaunched?(application, game.id, game.title) }
                     GameOverlayController.shared.beginSession(game: self.data.games[i], application: application)
                     self.notificationCenter.post("Game launched", "\(game.title) is running.", category: .games, level: .success)
                 }
             }
         }
+    }
+
+    private func launchApplication(_ game: Game, at appURL: URL, arguments: [String]) {
+        guard FileManager.default.fileExists(atPath: appURL.path) else {
+            notice = "Unable to launch \(game.displayTitle): the application or emulator is missing."
+            return
+        }
+        closeCurrentGame()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = arguments
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { [weak self] application, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.notice = "Could not launch \(game.displayTitle): \(error.localizedDescription)"
+                    ConsoleToastManager.shared.post("Unable to Launch", error.localizedDescription, symbol: "exclamationmark.triangle.fill", priority: .warning)
+                    return
+                }
+                guard let application else {
+                    self.notice = "Could not resolve the running application for \(game.displayTitle)."
+                    return
+                }
+                self.markGameLaunched(game.id)
+                self.activeExternalGameApplication = application
+                self.onConsoleExternalApplicationLaunched?(application, game.id, game.displayTitle)
+                GameOverlayController.shared.beginSession(game: game, application: application)
+            }
+        }
+    }
+
+    private func launchCrossOverExecutable(_ game: Game, bottleName: String, bottlePath: URL, executableURL: URL) {
+        guard FileManager.default.fileExists(atPath: executableURL.path) else {
+            notice = "Unable to launch \(game.displayTitle): its CrossOver executable is missing."
+            return
+        }
+        let candidates = [
+            "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/cxstart",
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/CrossOver/CrossOver.app/Contents/SharedSupport/CrossOver/bin/cxstart").path
+        ]
+        guard let cxstart = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            notice = "CrossOver could not be found. Open CrossOver once, then try again."
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cxstart)
+        process.arguments = ["--bottle", bottleName, executableURL.path]
+        process.currentDirectoryURL = bottlePath
+        do {
+            try launchWindowsBottleProcess(process, game: game)
+            markGameLaunched(game.id)
+        } catch { notice = "Could not launch \(game.displayTitle): \(error.localizedDescription)" }
     }
     func closeCurrentGame() {
         if let group = activeWindowsBottleProcessGroup {
@@ -476,9 +601,10 @@ final class LibraryStore: ObservableObject {
         activeExternalGameApplication = nil
         GameOverlayController.shared.endSession()
     }
-    private func launchWindowsBottleProcess(_ process: Process) throws {
+    private func launchWindowsBottleProcess(_ process: Process, game: Game) throws {
         closeCurrentGame()
         activeWindowsBottleProcessGroup = try AppProcessSupervisor.run(process)
+        if let pid = activeWindowsBottleProcessGroup { onConsoleManagedProcessLaunched?(pid, game.id, game.title) }
     }
     private func launchWindowsStoreGame(_ game: Game, provider: String, gameID: String) {
         guard let workspaceURL else {
@@ -538,7 +664,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try launchWindowsBottleProcess(process)
+            try launchWindowsBottleProcess(process, game: game)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not launch \(game.title): \(error.localizedDescription)" }
     }
@@ -567,7 +693,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try launchWindowsBottleProcess(process)
+            try launchWindowsBottleProcess(process, game: game)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not open \(game.title): \(error.localizedDescription)" }
     }
@@ -610,7 +736,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try launchWindowsBottleProcess(process)
+            try launchWindowsBottleProcess(process, game: game)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not open \(game.title): \(error.localizedDescription)" }
     }
@@ -690,7 +816,7 @@ final class LibraryStore: ObservableObject {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try launchWindowsBottleProcess(process)
+            try launchWindowsBottleProcess(process, game: game)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not launch \(game.title) through Windows Steam: \(error.localizedDescription)" }
     }
@@ -816,7 +942,7 @@ final class LibraryStore: ObservableObject {
             }
         }
         do {
-            try launchWindowsBottleProcess(process)
+            try launchWindowsBottleProcess(process, game: game)
             notificationCenter.post("Game launched", "\(game.title) is running.", category: .games, level: .success)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) { data.games[index].lastPlayed = Date(); save() }
         } catch { notice = "Could not launch \(game.title): \(error.localizedDescription)" }
@@ -868,6 +994,7 @@ final class LibraryStore: ObservableObject {
             try AppProcessSupervisor.run(process)
             notificationCenter.post("Game launched", "\(game.title) is running.", category: .games, level: .success)
             gameProcess = process
+            onConsoleManagedProcessLaunched?(process.processIdentifier, game.id, game.title)
             gameRunLog = output
             startGameConsoleLog(at: logURL)
             if let index = data.games.firstIndex(where: { $0.id == game.id }) {
@@ -907,6 +1034,7 @@ final class LibraryStore: ObservableObject {
                     return
                 }
                 self.activeExternalGameApplication = application
+                self.onConsoleExternalApplicationLaunched?(application, game.id, game.title)
                 if let index = self.data.games.firstIndex(where: { $0.id == game.id }) {
                     self.data.games[index].lastPlayed = Date()
                     self.save()
@@ -1272,6 +1400,43 @@ final class LibraryStore: ObservableObject {
         Task { await artworkCache.removeArtwork(for: id) }
     }
     func prepareArtwork() { artworkCredentials.load() }
+
+    /// Enriches console games in the background, with focus and adjacent ribbon items first.
+    func enrichConsoleGames(focusedGameID: String?) {
+        let candidates = consoleGames.filter { game in
+            let checkedRecently = game.artworkCheckedAt.map { Date().timeIntervalSince($0) < 24 * 60 * 60 } ?? false
+            let hasCachedArt = game.tileArt.map { FileManager.default.fileExists(atPath: $0.path) } == true
+                && game.heroArt.map { FileManager.default.fileExists(atPath: $0.path) } == true
+            return !hasCachedArt && !checkedRecently
+        }
+        guard !candidates.isEmpty else { return }
+        Task { await metadataEnrichmentQueue.enqueue(candidates, focusedGameID: focusedGameID) }
+    }
+
+    private func applyMetadataEnrichment(_ result: GameDBEnrichment) {
+        guard let index = data.games.firstIndex(where: {
+            $0.id == result.gameID && GameDBService.sanitizeTitle($0.normalizedTitle ?? $0.displayTitle) == result.titleKey
+        }) else { return }
+        let provider = result.matchedTitle == nil ? "Local App Icon" : "GameDB"
+        if let tilePath = result.tilePath {
+            data.games[index].tileArt = ArtworkRecord(path: tilePath, provider: provider, sourceURL: nil, credit: nil)
+            data.games[index].boxArt = ArtworkRecord(path: tilePath, provider: provider, sourceURL: nil, credit: nil)
+        }
+        if let heroPath = result.heroPath {
+            data.games[index].heroArt = ArtworkRecord(path: heroPath, provider: provider, sourceURL: nil, credit: nil)
+        }
+        if var metadata = result.metadata {
+            metadata.screenshots = result.artworkPaths.map {
+                ArtworkRecord(path: $0, provider: "GameDB", sourceURL: nil, credit: nil)
+            }
+            data.games[index].metadata = metadata
+        }
+        if let matchedTitle = result.matchedTitle { data.games[index].artworkMatchedTitle = matchedTitle }
+        data.games[index].artworkCheckedAt = result.errorMessage == nil ? .now : nil
+        if let errorMessage = result.errorMessage { artworkMessages[result.gameID] = errorMessage }
+        save()
+    }
+
     func fetchArtwork(gameID: String? = nil, force: Bool = false) {
         if isFetchingArtwork {
             let ids = gameID.map { [$0] } ?? data.games.map(\.id)

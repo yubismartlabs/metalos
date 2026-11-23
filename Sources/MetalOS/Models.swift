@@ -1,7 +1,7 @@
 import Foundation
 
 enum GameSource: String, Codable, CaseIterable, Identifiable, Sendable {
-    case all = "All Games", nxnative = "NXNative", ps2 = "PlayStation 2", steam = "Steam", epic = "Epic", gog = "GOG", battleNet = "Battle.net", windows = "Windows", crossover = "CrossOver", heroic = "Heroic", appStore = "App Store", native = "Native"
+    case all = "All Games", nxnative = "NXNative", ps2 = "PlayStation 2", steam = "Steam", epic = "Epic", gog = "GOG", battleNet = "Battle.net", windows = "Windows", crossover = "CrossOver", whisky = "Whisky", emulator = "Emulator", heroic = "Heroic", appStore = "App Store", native = "Native"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -14,6 +14,8 @@ enum GameSource: String, Codable, CaseIterable, Identifiable, Sendable {
         case .battleNet: "b.square.fill"
         case .windows: "pc"
         case .crossover: "square.stack.3d.up.fill"
+        case .whisky: "wineglass.fill"
+        case .emulator: "gamecontroller.fill"
         case .heroic: "shield.lefthalf.filled"
         case .appStore: "apple.logo"
         case .native: "desktopcomputer"
@@ -106,8 +108,53 @@ struct Game: Identifiable, Codable, Hashable, Sendable {
     var windowsGraphicsBackendUserSet: Bool? = nil
     var windowsCompatibilityRuntime: WindowsCompatibilityRuntime? = nil
     var lutrisWineProfile: LutrisWineProfile? = nil
+    var launchSpec: GameLaunchSpec? = nil
+    var normalizedTitle: String? = nil
+    var platformBadge: String? = nil
+    var isHidden: Bool? = nil
+    var collectionIDs: [String]? = nil
+    var customTitle: String? = nil
+    var gameDBId: Int? = nil
+    var customArtworkPath: String? = nil
     var isGame: Bool { isGameApp ?? (source != .native || id.hasPrefix("app:") || id.hasPrefix("manual:")) }
     var isAvailable: Bool { FileManager.default.fileExists(atPath: installPath) }
+    var displayTitle: String { customTitle?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? metadata?.localizedTitle ?? title }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
+
+enum GameLaunchSpec: Codable, Hashable, Sendable {
+    case appBundle(appURL: URL, bundleID: String?)
+    case steam(appID: String)
+    case bottle(bottleName: String, bottlePath: URL, executableURL: URL, wrapperURL: URL?)
+    case emulator(emulatorAppURL: URL, romURL: URL, arguments: [String])
+}
+
+struct EmulatorProfile: Identifiable, Codable, Hashable, Sendable {
+    var id: String
+    var name: String
+    var platformLabel: String
+    var emulatorAppPath: String
+    var romDirectoryPath: String
+    var fileExtensions: [String]
+    var argumentTemplate: [String]
+    var enabled: Bool
+
+    var emulatorAppURL: URL { URL(fileURLWithPath: NSString(string: emulatorAppPath).expandingTildeInPath) }
+    var romDirectoryURL: URL { URL(fileURLWithPath: NSString(string: romDirectoryPath).expandingTildeInPath, isDirectory: true) }
+
+    static var presets: [EmulatorProfile] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            .init(id: "retroarch-snes", name: "RetroArch", platformLabel: "SNES", emulatorAppPath: "/Applications/RetroArch.app", romDirectoryPath: home.appendingPathComponent("Games/SNES").path, fileExtensions: ["sfc", "smc"], argumentTemplate: ["{rom}"], enabled: false),
+            .init(id: "retroarch-gba", name: "RetroArch", platformLabel: "GBA", emulatorAppPath: "/Applications/RetroArch.app", romDirectoryPath: home.appendingPathComponent("Games/GBA").path, fileExtensions: ["gba"], argumentTemplate: ["{rom}"], enabled: false),
+            .init(id: "dolphin", name: "Dolphin", platformLabel: "GameCube / Wii", emulatorAppPath: "/Applications/Dolphin.app", romDirectoryPath: home.appendingPathComponent("Games/Dolphin").path, fileExtensions: ["iso", "wbfs", "rvz", "gcm"], argumentTemplate: ["{rom}"], enabled: false),
+            .init(id: "pcsx2", name: "PCSX2", platformLabel: "PS2", emulatorAppPath: "/Applications/PCSX2.app", romDirectoryPath: home.appendingPathComponent("Games/PS2").path, fileExtensions: ["iso", "chd", "cso"], argumentTemplate: ["{rom}"], enabled: false),
+            .init(id: "ryujinx", name: "Ryujinx", platformLabel: "Switch", emulatorAppPath: "/Applications/Ryujinx.app", romDirectoryPath: home.appendingPathComponent("Games/Switch").path, fileExtensions: ["nsp", "xci"], argumentTemplate: ["{rom}"], enabled: false)
+        ]
+    }
 }
 struct GameRunConfiguration: Codable, Hashable, Sendable {
     var executablePath: String
@@ -127,6 +174,7 @@ struct LauncherSettings: Codable, Equatable, Sendable {
     var homeWallpaperPath: String? = nil
     var homeParticlesEnabled: Bool? = nil
     var defaultWindowsRuntime: WindowsCompatibilityRuntime? = nil
+    var emulatorProfiles: [EmulatorProfile]? = nil
 }
 struct LibraryData: Codable {
     var games: [Game] = []

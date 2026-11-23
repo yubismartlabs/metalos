@@ -1,98 +1,69 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 @MainActor
 final class StudioAppDelegate: NSObject, NSApplicationDelegate {
-    weak var builder: NXBuildService?
-    var library: LibraryStore?
-    private var fallbackWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        DispatchQueue.main.async { [weak self] in self?.ensureLibraryWindow() }
+        ConsoleShellCoordinator.shared.launchShell()
     }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows { ensureLibraryWindow() }
+        ConsoleShellCoordinator.shared.showShell()
         return true
     }
-    private func ensureLibraryWindow() {
-        if let window = NSApp.windows.first(where: { !($0 is NSPanel) && $0.canBecomeMain }) {
-            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
-        }
-        guard let library else { return }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1380, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "MetalOS"; window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: MetalOSRootView().environmentObject(library).frame(minWidth: 1000, minHeight: 680).preferredColorScheme(.dark))
-        fallbackWindow = window; window.center(); window.makeKeyAndOrderFront(nil)
-        GameOverlayController.shared.configure(store: library)
-        NSApp.activate(ignoringOtherApps: true)
+
+    func toggleConsoleFullscreen() { ConsoleShellCoordinator.shared.toggleFullscreen() }
+
+    func moveConsole(toDisplay displayName: String) {
+        ConsoleSettingsStore.shared.targetDisplay = displayName
+        ConsoleShellCoordinator.shared.setTargetDisplay(displayName)
     }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) {
-        builder?.cancel()
-        library?.closeCurrentGame()
-        AppProcessSupervisor.terminateAll()
-    }
 }
+
 
 @main
 struct MetalOSApp: App {
     @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var delegate
-    @StateObject private var library: LibraryStore
-    init() {
-        let store = LibraryStore()
-        _library = StateObject(wrappedValue: store)
-        delegate.library = store
-        delegate.builder = store.builder
-    }
+
     var body: some Scene {
         WindowGroup {
-            MetalOSRootView().environmentObject(library)
-                .frame(minWidth: 1000, minHeight: 680)
-                .preferredColorScheme(.dark)
-                .onAppear {
-                    delegate.builder = library.builder
-                    GameOverlayController.shared.configure(store: library)
-                }
+            ConsoleLauncherView()
+                .background(ConsoleWindowAccessor { window in
+                    ConsoleShellCoordinator.shared.adoptSceneWindow(window)
+                }.frame(width: 0, height: 0))
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1380, height: 900)
+        .defaultSize(width: 1440, height: 900)
         .commands {
-            CommandGroup(after: .newItem) {
-                Button("Import Mac Game…") { library.importApp() }.keyboardShortcut("o")
-                Button("Import Switch Game…") { library.showImport = true }.keyboardShortcut("i")
-                Button("Scan Libraries") { Task { await library.scan() } }.keyboardShortcut("r")
-            }
-            CommandGroup(replacing: .appSettings) { Button("Settings…") { library.showSettings = true }.keyboardShortcut(",") }
-            CommandMenu("Library") {
-                Button("Game Bar") { GameOverlayController.shared.showFromLibrary() }.keyboardShortcut("o", modifiers: [.command, .shift])
-                Button("Toggle Console Mode") { library.toggleConsole() }.keyboardShortcut("f", modifiers: [.command, .shift])
-            }
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .appSettings) {}
         }
     }
 }
 
-private struct MetalOSRootView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @State private var showingStartupScreen = true
-    @ObservedObject private var preferences = ConsolePreferences.shared
-    @ObservedObject private var feedback = ConsoleFeedback.shared
+private struct ConsoleWindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
 
-    var body: some View {
-        ZStack {
-            LibraryView()
-            if showingStartupScreen && preferences.bootAnimation && !feedback.motionReduced {
-                StartupScreenView {
-                    withAnimation(.easeOut(duration: 0.35)) {
-                        showingStartupScreen = false
-                    }
-                }
-                .transition(.opacity)
-                .zIndex(1)
-            }
-        }
-        .onAppear {
-            if !preferences.bootAnimation || feedback.motionReduced { showingStartupScreen = false }
+    func makeNSView(context: Context) -> WindowObserverView {
+        let view = WindowObserverView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ view: WindowObserverView, context: Context) {
+        view.onWindow = onWindow
+        if let window = view.window { onWindow(window) }
+    }
+
+    final class WindowObserverView: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            onWindow?(window)
         }
     }
 }

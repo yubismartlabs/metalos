@@ -4,10 +4,10 @@ import Foundation
 struct GameDiscovery: Sendable {
     static let managerBundleIDs: Set<String> = ["com.codeweavers.CrossOver", "com.heroicgameslauncher.hgl", "com.valvesoftware.steam", "com.varyform.nxplay", "org.nxnative.NSPortBuilder"]
     func scan(roots: [String]) async -> DiscoveryResult {
-        await Task.detached(priority: .utility) { Self.scanLocal(roots: roots) }.value
+        await Task.detached(priority: .utility) { Self.scanLocalForConsole(roots: roots) }.value
     }
 
-    private static func scanLocal(roots: [String]) -> DiscoveryResult {
+    static func scanLocalForConsole(roots: [String]) -> DiscoveryResult {
         let fm = FileManager.default
         var result = DiscoveryResult()
         var seen = Set<String>()

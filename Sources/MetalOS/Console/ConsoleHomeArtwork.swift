@@ -1,4 +1,3 @@
-import ImageIO
 import SwiftUI
 
 struct ConsoleHomeArtwork: View {
@@ -14,6 +13,7 @@ struct ConsoleHomeArtwork: View {
                     .scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
+                    .transition(.opacity)
             }
         }
         .accessibilityHidden(true)
@@ -27,40 +27,14 @@ struct ConsoleHomeArtwork: View {
 }
 
 private enum ConsoleArtworkImages {
-    private static let cache: NSCache<NSString, CGImage> = {
-        let cache = NSCache<NSString, CGImage>()
-        cache.totalCostLimit = 96 * 1024 * 1024
-        return cache
-    }()
-
     static func load(_ paths: [String], maxPixelSize: Int) async -> CGImage? {
-        let load = Task.detached(priority: .userInitiated) { () -> CGImage? in
-            for path in paths {
-                guard !Task.isCancelled else { break }
-                let url = URL(fileURLWithPath: path)
-                let resources = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                let modified = resources?.contentModificationDate?.timeIntervalSince1970 ?? 0
-                let key = "\(maxPixelSize):\(modified):\(path)" as NSString
-                if let cached = cache.object(forKey: key) { return cached }
-
-                let options: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-                ]
-                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-                else { continue }
-                cache.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
+        for path in paths {
+            guard !Task.isCancelled else { return nil }
+            if let image = await GameArtworkImageCache.shared.image(path: path, maxPixelSize: maxPixelSize) {
                 return image
             }
-            return nil
         }
-        return await withTaskCancellationHandler {
-            await load.value
-        } onCancel: {
-            load.cancel()
-        }
+        return nil
     }
 }
 

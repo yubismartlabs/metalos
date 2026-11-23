@@ -159,17 +159,7 @@ struct LibraryView: View {
             } else if store.console && consoleHomeTab != .games {
                 ConsoleSystemPage(maintenance: consoleMaintenance, tab: $consoleHomeTab)
             } else if store.console {
-                ConsoleHomeHub(
-                    games: consoleHomeGames,
-                    wallpaperPaths: consoleWallpaperPaths,
-                    wallpaperVideo: consoleWallpaperVideo,
-                    accent: appearance.accent,
-                    tab: $consoleHomeTab,
-                    selectedID: $store.selectedID,
-                    onAction: performConsoleHomeAction
-                ) {
-                    ConsoleLiveHomeStatus()
-                }
+                consoleWelcomeExperience
             } else {
             ZStack {
                 HomeBackdrop(game: selectedStoreTile != nil || welcomeSelected ? nil : store.selected,
@@ -527,6 +517,20 @@ struct LibraryView: View {
         consoleHomeGames = store.consoleGames.map {
             ConsoleHomeGame($0, windowsDefault: store.data.settings.defaultWindowsRuntime)
         }
+    }
+
+    private var consoleWelcomeExperience: some View {
+        ConsoleWelcomeExperience(
+            games: consoleHomeGames,
+            wallpaperPaths: consoleWallpaperPaths,
+            accent: appearance.accent,
+            storageAvailable: storageAvailableText,
+            captures: welcomeCaptures,
+            onAction: performConsoleHomeAction,
+            onSettings: { consoleHomeTab = .settings },
+            onSearch: { searchOpen = true },
+            selectedID: $store.selectedID
+        )
     }
 
     private func performConsoleHomeAction(_ action: ConsoleHomeAction) {

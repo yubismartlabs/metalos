@@ -206,6 +206,7 @@ final class ControllerManager: ObservableObject {
         // shortcuts so the same press cannot affect the library behind a sheet.
         if let handler = inputHandlers.last { handler.action(command); return }
         if priorityAction?(command) == true { return }
+        if ConsoleShellCoordinator.shared.routeControllerCommand(command) { return }
         action?(command)
     }
     private func direction(_ x: Float, _ y: Float) {

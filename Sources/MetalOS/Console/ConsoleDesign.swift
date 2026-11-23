@@ -7,7 +7,7 @@ enum ConsoleDesign {
         static let text = Color.white.opacity(0.96)
         static let secondaryText = Color.white.opacity(0.74)
         static let border = Color.white.opacity(0.16)
-        static let focus = Color(red: 0.82, green: 0.89, blue: 1)
+        static var focus = Color.white
     }
 
     enum Typography {
@@ -44,6 +44,77 @@ enum ConsoleDesign {
     enum Artwork {
         static let blurRadius: CGFloat = 56
         static let scrimOpacity = 0.58
+    }
+}
+
+enum ConsoleMotion {
+    static let focusSpring = Animation.spring(response: 0.34, dampingFraction: 0.88)
+    static let ribbonSpring = Animation.spring(response: 0.44, dampingFraction: 0.91)
+    static let zoneSpring = Animation.spring(response: 0.52, dampingFraction: 0.9)
+    static let crossfadeDuration = 0.52
+    static let browseDebounceNanoseconds: UInt64 = 100_000_000
+    static let focusBreathDuration = 2.7
+    static let focusSweepDuration = 5.2
+    static let focusRingWidth: CGFloat = 2.5
+    static let focusGlowRadius: CGFloat = 20
+    static let tileFocusScale: CGFloat = 1.15
+    static let tileIdleOpacity = 0.78
+    static let tileIdleSaturation = 0.84
+    static let activityFocusScale: CGFloat = 1.025
+    static let ambientDriftDuration = 32.0
+}
+
+struct ConsoleSignatureFocusRing<S: InsettableShape>: View {
+    let shape: S
+    let isFocused: Bool
+
+    @State private var breathing = false
+    @State private var sweepPhase = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var ringColor: Color { ConsoleDesign.Palette.focus }
+    private var motionEnabled: Bool { !reduceMotion }
+
+    private var sweep: AngularGradient {
+        AngularGradient(
+            gradient: Gradient(stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .white.opacity(0.72), location: 0.11),
+                .init(color: .clear, location: 0.23),
+                .init(color: .clear, location: 1)
+            ]),
+            center: .center,
+            startAngle: .degrees(sweepPhase * 360),
+            endAngle: .degrees(sweepPhase * 360 + 360)
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            shape.strokeBorder(ringColor.opacity(isFocused ? 0.98 : 0), lineWidth: ConsoleMotion.focusRingWidth)
+            shape.strokeBorder(sweep, lineWidth: 1.15).opacity(isFocused && motionEnabled ? 0.62 : 0)
+        }
+        .shadow(color: ringColor.opacity(isFocused ? (breathing ? 0.32 : 0.18) : 0),
+                radius: isFocused ? (breathing ? ConsoleMotion.focusGlowRadius : ConsoleMotion.focusGlowRadius * 0.72) : 0)
+        .animation(motionEnabled ? ConsoleMotion.focusSpring : nil, value: isFocused)
+        .onAppear(perform: startAmbientRingMotion)
+        .onChange(of: isFocused) { _, focused in
+            guard focused else {
+                breathing = false
+                sweepPhase = 0
+                return
+            }
+            startAmbientRingMotion()
+        }
+    }
+
+    private func startAmbientRingMotion() {
+        guard isFocused, motionEnabled else { return }
+        withAnimation(.easeInOut(duration: ConsoleMotion.focusBreathDuration).repeatForever(autoreverses: true)) {
+            breathing = true
+        }
+        withAnimation(.linear(duration: ConsoleMotion.focusSweepDuration).repeatForever(autoreverses: false)) {
+            sweepPhase = 1
+        }
     }
 }
 

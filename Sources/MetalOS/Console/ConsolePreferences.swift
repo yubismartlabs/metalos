@@ -32,11 +32,20 @@ enum ConsoleSoundPack: String, CaseIterable {
 }
 
 enum ConsoleGlyphStyle: String, CaseIterable {
-    case auto = "Auto", playStation = "PlayStation", xbox = "Xbox", nintendo = "Nintendo"
+    case auto = "Auto", playStation = "PlayStation", xbox = "Xbox", nintendo = "Nintendo", keyboard = "Keyboard"
 
     func label(for control: ConsolePromptControl) -> String? {
         switch (self, control) {
         case (.auto, _): nil
+        case (.keyboard, .confirm): "↵"
+        case (.keyboard, .back): "Esc"
+        case (.keyboard, .details): "Space"
+        case (.keyboard, .secondary): "O"
+        case (.keyboard, .previousTab): "Q"
+        case (.keyboard, .nextTab): "E"
+        case (.keyboard, .menu): "M"
+        case (.keyboard, .context): "M"
+        case (.keyboard, .guide): "C"
         case (.playStation, .confirm): "×"
         case (.playStation, .back): "○"
         case (.playStation, .details): "□"
